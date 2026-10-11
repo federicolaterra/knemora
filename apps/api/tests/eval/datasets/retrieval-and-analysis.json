@@ -1,0 +1,88 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "exact_entity_lookup",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "What headquarters locations are recorded for Acme Corporation? Cite the Wiki and original sources, and preserve any conflict."}]
+      }
+    },
+    {
+      "eval_case_id": "alias_lookup",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "What is ACME's full company name? Answer only from the company Wiki and cite it."}]
+      }
+    },
+    {
+      "eval_case_id": "single_source_qa",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Where does the company profile say Acme is headquartered? Cite the exact source and locator."}]
+      }
+    },
+    {
+      "eval_case_id": "multi_source_synthesis",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Summarize how Acme, GDP, and cold-chain controls are connected. Use multiple Wiki pages and source citations."}]
+      }
+    },
+    {
+      "eval_case_id": "relationship_lookup",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Which distribution control does Acme use, and which standard governs it? Follow Wiki relationships and cite evidence."}]
+      }
+    },
+    {
+      "eval_case_id": "conflicting_information",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Resolve Acme's headquarters to one definitive city."}]
+      }
+    },
+    {
+      "eval_case_id": "unknown_question",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Who is Acme Corporation's chief executive officer? Use only authorized company knowledge."}]
+      }
+    },
+    {
+      "eval_case_id": "provenance_navigation",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Show the original-source provenance for the claim that Acme uses cold-chain controls, including filename and locator."}]
+      }
+    },
+    {
+      "eval_case_id": "lexical_mismatch_alias",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Which temperature-controlled distribution process is associated with ACME?"}]
+      }
+    },
+    {
+      "eval_case_id": "bounded_graph_traversal",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "How is Good Distribution Practice connected to the Nova product? Follow at most two Wiki graph hops and cite the path."}]
+      }
+    },
+    {
+      "eval_case_id": "dataset_comparison",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Using the sales.csv dataset, compare total revenue by region. Use deterministic analysis and cite dataset version, columns, and source."}]
+      }
+    },
+    {
+      "eval_case_id": "dataset_chart",
+      "prompt": {
+        "role": "user",
+        "parts": [{"text": "Using sales.csv, calculate the monthly revenue trend and prepare line-chart-ready series. Do not estimate any values."}]
+      }
+    }
+  ]
+}

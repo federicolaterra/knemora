@@ -1,0 +1,134 @@
+import json
+
+import httpx
+
+from app.llm import (
+    ChatMessage,
+    ChatRequest,
+    ChatToolDefinition,
+    LocalLlamaCppProvider,
+)
+
+
+def test_local_provider_health_and_chat_contract() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok"})
+        payload = json.loads(request.content)
+        assert payload["model"] == "configured-model"
+        assert payload["messages"] == [{"role": "user", "content": "Hello"}]
+        assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+        return httpx.Response(
+            200,
+            json={
+                "model": "configured-model",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "Hi"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            },
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = LocalLlamaCppProvider(
+                base_url="http://llama.test", model="configured-model", client=client
+            )
+            health = await provider.health()
+            response = await provider.chat(
+                ChatRequest(messages=(ChatMessage(role="user", content="Hello"),))
+            )
+        assert health.healthy is True
+        assert response.message.content == "Hi"
+        assert response.usage.total_tokens == 2
+
+    import asyncio
+
+    asyncio.run(exercise())
+
+
+async def test_local_provider_stream_contract() -> None:
+    body = (
+        'data: {"model":"configured-model","choices":[{"delta":{"content":"Hello"},'
+        '"finish_reason":null}]}\n\n'
+        'data: {"model":"configured-model","choices":[{"delta":{"content":""},'
+        '"finish_reason":"stop"}]}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = LocalLlamaCppProvider(
+            base_url="http://llama.test", model="configured-model", client=client
+        )
+        chunks = [
+            chunk
+            async for chunk in provider.stream(
+                ChatRequest(messages=(ChatMessage(role="user", content="Hello"),))
+            )
+        ]
+
+    assert "".join(chunk.delta for chunk in chunks) == "Hello"
+    assert any(chunk.done for chunk in chunks)
+
+
+def test_local_provider_sends_tools_and_parses_function_calls() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["tool_choice"] == "auto"
+        assert payload["tools"][0]["function"]["name"] == "search_wiki"
+        return httpx.Response(
+            200,
+            json={
+                "model": "configured-model",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "search_wiki",
+                                        "arguments": '{"query":"ACME"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            },
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = LocalLlamaCppProvider(
+                base_url="http://llama.test", model="configured-model", client=client
+            )
+            response = await provider.chat(
+                ChatRequest(
+                    messages=(ChatMessage(role="user", content="Find ACME"),),
+                    tools=(
+                        ChatToolDefinition(
+                            name="search_wiki",
+                            description="Search the Wiki.",
+                            parameters={
+                                "type": "object",
+                                "properties": {"query": {"type": "string"}},
+                            },
+                        ),
+                    ),
+                )
+            )
+        assert response.message.content == ""
+        assert response.message.tool_calls[0].name == "search_wiki"
+        assert response.message.tool_calls[0].arguments == {"query": "ACME"}
+
+    import asyncio
+
+    asyncio.run(exercise())

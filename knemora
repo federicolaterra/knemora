@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if ! command -v node >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+Knemora requires Node.js 24 or newer with npm.
+Install Node.js from https://nodejs.org/, then rerun ./knemora.
+Knemora manages Python, uv, and llama.cpp itself; Homebrew is not required.
+EOF
+  exit 2
+fi
+
+exec node "${repo_root}/bootstrap/knemora-bootstrap.mjs" "$@"

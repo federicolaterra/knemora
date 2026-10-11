@@ -1,0 +1,82 @@
+{
+  "formatVersion": 1,
+  "python": {
+    "implementation": "cpython",
+    "version": "3.13.14"
+  },
+  "uv": {
+    "version": "0.11.22",
+    "source": "https://github.com/astral-sh/uv/releases/tag/0.11.22",
+    "targets": [
+      {
+        "platform": "darwin",
+        "architecture": "arm64",
+        "backend": "host",
+        "status": "supported",
+        "archive": {
+          "name": "uv-aarch64-apple-darwin.tar.gz",
+          "url": "https://releases.astral.sh/github/uv/releases/download/0.11.22/uv-aarch64-apple-darwin.tar.gz",
+          "size": 21108788,
+          "sha256": "97a45e2ff8d5ea262623eed57ec2d9c468a42d74496d5c3c3eef11340235bd7f"
+        },
+        "executable": "uv"
+      }
+    ]
+  },
+  "llamaCpp": {
+    "version": "b11146",
+    "source": "https://github.com/ggml-org/llama.cpp/releases/tag/b11146",
+    "attestation": "https://github.com/ggml-org/llama.cpp/attestations/49623059",
+    "targets": [
+      {
+        "platform": "darwin",
+        "architecture": "arm64",
+        "backend": "metal",
+        "status": "supported",
+        "minimumOs": "macOS 13.3",
+        "archive": {
+          "name": "llama-b11146-bin-macos-arm64.tar.gz",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-arm64.tar.gz",
+          "size": 11189714,
+          "sha256": "1ad3f9eff80edb9dbef4259ad564d1720612ef7eea48fa4afed0e54f5f3d5711",
+          "root": "llama-b11146"
+        },
+        "executable": "llama-server",
+        "versionMarkers": [
+          "build 11146",
+          "Darwin arm64"
+        ]
+      },
+      {
+        "platform": "darwin",
+        "architecture": "x64",
+        "backend": "cpu",
+        "status": "not-supported-yet"
+      },
+      {
+        "platform": "linux",
+        "architecture": "x64",
+        "backend": "cpu",
+        "status": "not-supported-yet"
+      },
+      {
+        "platform": "linux",
+        "architecture": "arm64",
+        "backend": "cpu",
+        "status": "not-supported-yet"
+      },
+      {
+        "platform": "win32",
+        "architecture": "x64",
+        "backend": "cpu",
+        "status": "not-supported-yet"
+      },
+      {
+        "platform": "win32",
+        "architecture": "arm64",
+        "backend": "cpu",
+        "status": "not-supported-yet"
+      }
+    ]
+  }
+}

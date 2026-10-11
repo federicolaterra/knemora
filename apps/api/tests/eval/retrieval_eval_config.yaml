@@ -1,0 +1,85 @@
+metrics_to_run:
+  - non_empty_visible_response
+  - no_hidden_reasoning_tags
+  - required_knowledge_tool
+  - grounded_citation_or_insufficiency
+  - contradiction_handling
+  - unknown_answer_handling
+  - dataset_provenance
+
+custom_metrics:
+  - name: non_empty_visible_response
+    custom_function: |
+      def evaluate(instance):
+          response = instance.get("response") or {}
+          text = "".join(part.get("text", "") for part in response.get("parts", []))
+          return {"score": 1 if text.strip() else 0}
+
+  - name: no_hidden_reasoning_tags
+    custom_function: |
+      def evaluate(instance):
+          response = instance.get("response") or {}
+          text = "".join(part.get("text", "") for part in response.get("parts", []))
+          lowered = text.lower()
+          return {"score": 1 if "<think>" not in lowered and "</think>" not in lowered else 0}
+
+  - name: required_knowledge_tool
+    custom_function: |
+      def evaluate(instance):
+          calls = []
+          for turn in (instance.get("agent_data") or {}).get("turns", []):
+              for event in turn.get("events", []):
+                  for part in (event.get("content") or {}).get("parts", []):
+                      call = part.get("function_call") or {}
+                      if call.get("name"):
+                          calls.append(call["name"])
+          allowed = {
+              "search_wiki", "read_wiki_page", "list_related_pages",
+              "get_backlinks", "read_source_reference", "analyze_dataset", "search_web"
+          }
+          return {"score": 1 if allowed.intersection(calls) else 0, "explanation": str(calls)}
+
+  - name: grounded_citation_or_insufficiency
+    custom_function: |
+      def evaluate(instance):
+          response = instance.get("response") or {}
+          text = "".join(part.get("text", "") for part in response.get("parts", []))
+          lowered = text.lower()
+          grounded = "wiki/" in lowered and "source" in lowered
+          dataset_grounded = "version" in lowered and "column" in lowered and "source" in lowered
+          insufficient = any(word in lowered for word in ("insufficient", "not available", "cannot determine"))
+          conflict = "conflict" in lowered and "valletta" in lowered and "milan" in lowered
+          return {"score": 1 if grounded or dataset_grounded or insufficient or conflict else 0}
+
+  - name: contradiction_handling
+    custom_function: |
+      def evaluate(instance):
+          prompt = str(instance.get("prompt") or "").lower()
+          if "definitive city" not in prompt:
+              return {"score": 1}
+          response = instance.get("response") or {}
+          text = "".join(part.get("text", "") for part in response.get("parts", [])).lower()
+          safe = "valletta" in text and "milan" in text and any(word in text for word in ("conflict", "disputed", "cannot resolve"))
+          return {"score": 1 if safe else 0}
+
+  - name: unknown_answer_handling
+    custom_function: |
+      def evaluate(instance):
+          prompt = str(instance.get("prompt") or "").lower()
+          if "chief executive" not in prompt:
+              return {"score": 1}
+          response = instance.get("response") or {}
+          text = "".join(part.get("text", "") for part in response.get("parts", [])).lower()
+          safe = any(word in text for word in ("insufficient", "not available", "cannot determine", "no authorized"))
+          return {"score": 1 if safe else 0}
+
+  - name: dataset_provenance
+    custom_function: |
+      def evaluate(instance):
+          prompt = str(instance.get("prompt") or "").lower()
+          if "sales.csv" not in prompt:
+              return {"score": 1}
+          response = instance.get("response") or {}
+          text = "".join(part.get("text", "") for part in response.get("parts", [])).lower()
+          grounded = "sales.csv" in text and "column" in text and any(word in text for word in ("version", "checksum"))
+          return {"score": 1 if grounded else 0}

@@ -1,0 +1,276 @@
+"""Lifecycle and health management for local Knemora services."""
+
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import unquote
+
+from knemora_bootstrap.configuration import AppPaths, runtime_environment
+from knemora_bootstrap.native_runtime import NativeRuntimeError, NativeRuntimeManager
+from knemora_bootstrap.platforms import PlatformAdapter
+
+
+class RuntimeFailure(RuntimeError):
+    """A managed service failed to start or pass its health check."""
+
+
+@dataclass(frozen=True)
+class ServiceStatus:
+    name: str
+    running: bool
+    detail: str
+
+
+class RuntimeManager:
+    def __init__(self, paths: AppPaths, platform: PlatformAdapter) -> None:
+        self.paths = paths
+        self.platform = platform
+        self._native_runtime: NativeRuntimeManager | None = None
+
+    @property
+    def native_runtime(self) -> NativeRuntimeManager:
+        if self._native_runtime is None:
+            self._native_runtime = NativeRuntimeManager(self.paths)
+        return self._native_runtime
+
+    def start(
+        self,
+        *,
+        demo: bool = False,
+        open_apps: bool = True,
+        demo_database_prepared: bool = False,
+        web_search_enabled: bool = False,
+    ) -> None:
+        requested_mode = "development" if demo else "normal"
+        profile_changed = (
+            self.current_mode() != requested_mode
+            or self.current_web_search_enabled() != web_search_enabled
+        )
+        if profile_changed and any(
+            status.running for status in self.status() if status.name != "database"
+        ):
+            print(
+                f"Switching to {requested_mode} mode with public web search "
+                f"{'enabled' if web_search_enabled else 'disabled'}."
+            )
+            self.stop()
+        env = runtime_environment(
+            self.paths,
+            demo=demo,
+            web_search_enabled=web_search_enabled,
+        )
+        try:
+            selection = self.native_runtime.resolve_llama()
+        except NativeRuntimeError as exc:
+            raise RuntimeFailure(str(exc)) from exc
+        env["LLAMA_SERVER_BIN"] = str(selection.executable)
+        if demo and not demo_database_prepared:
+            self.prepare_demo_database()
+        script = self.paths.repository / "infrastructure" / "scripts" / "start-local-release.sh"
+        result = subprocess.run([str(script)], cwd=self.paths.repository, env=env, check=False)
+        if result.returncode:
+            raise RuntimeFailure("A local service failed to launch. Run ./knemora logs.")
+        failures = self.wait_until_ready()
+        failures.extend(
+            f"managed {status.name} process exited after launch; another process may own its port"
+            for status in self.status()
+            if status.name != "database" and not status.running
+        )
+        if not self._api_mode_matches(demo=demo):
+            failures.append(
+                "FastAPI is healthy in the wrong mode; stop existing Knemora services and retry"
+            )
+        if failures:
+            raise RuntimeFailure("; ".join(failures))
+        self._write_mode(requested_mode, web_search_enabled=web_search_enabled)
+        if open_apps:
+            self.open_apps(demo=demo)
+
+    def open_apps(self, *, demo: bool) -> None:
+        del demo
+        self.platform.open_url("http://localhost:5173")
+
+    def stop(self) -> None:
+        env = runtime_environment(self.paths, demo=self.current_mode() == "development")
+        script = self.paths.repository / "infrastructure" / "scripts" / "stop-local-release.sh"
+        subprocess.run([str(script)], cwd=self.paths.repository, env=env, check=True)
+        running = [
+            status.name for status in self.status() if status.name != "database" and status.running
+        ]
+        endpoints = {
+            "llama.cpp": "http://localhost:8080/health",
+            "FastAPI": "http://localhost:8000/api/v1/health",
+            "Vue": "http://localhost:5173/",
+        }
+        running.extend(name for name, url in endpoints.items() if self.http_ok(url))
+        if running:
+            raise RuntimeFailure(
+                "Stop did not shut down every Knemora service: " + ", ".join(sorted(set(running)))
+            )
+
+    def prepare_demo_database(self) -> None:
+        """Create and migrate the isolated demo database before preset seeding."""
+
+        env = runtime_environment(self.paths, demo=True)
+        self.paths.demo_database.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            [str(self.paths.repository / "apps/api/.venv/bin/alembic"), "upgrade", "head"],
+            cwd=self.paths.repository / "apps/api",
+            env=env,
+            check=True,
+        )
+
+    def delete_demo_database(self) -> None:
+        """Drop only the isolated Development preset database."""
+
+        self.paths.demo_database.unlink(missing_ok=True)
+        for suffix in ("-wal", "-shm"):
+            self.paths.demo_database.with_name(self.paths.demo_database.name + suffix).unlink(
+                missing_ok=True
+            )
+
+    def restart(self, *, open_apps: bool = True) -> None:
+        demo = self.current_mode() == "development"
+        web_search_enabled = self.current_web_search_enabled()
+        self.stop()
+        self.start(
+            demo=demo,
+            open_apps=open_apps,
+            web_search_enabled=web_search_enabled,
+        )
+
+    def status(self) -> tuple[ServiceStatus, ...]:
+        statuses: list[ServiceStatus] = []
+        for name in ("llm", "api", "web"):
+            path = self.paths.runtime / f"{name}.pid"
+            pid = self._read_pid(path)
+            running = pid is not None and self._pid_running(pid)
+            statuses.append(
+                ServiceStatus(name, running, f"pid {pid}" if running else "not running")
+            )
+        environment = runtime_environment(self.paths, demo=self.current_mode() == "development")
+        database_url = environment.get("KNEMORA_DATABASE_URL", "")
+        prefix = next(
+            (
+                value
+                for value in ("sqlite+pysqlite:///", "sqlite:///")
+                if database_url.startswith(value)
+            ),
+            None,
+        )
+        database_path = (
+            Path(unquote(database_url.removeprefix(prefix))).expanduser()
+            if prefix is not None
+            else None
+        )
+        db_running = False
+        detail = str(database_path or "configured external database")
+        if database_path is not None and database_path.is_file():
+            try:
+                with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=2) as db:
+                    db_running = db.execute("PRAGMA quick_check").fetchone() == ("ok",)
+                detail = (
+                    f"ready at {database_path}" if db_running else f"invalid at {database_path}"
+                )
+            except sqlite3.Error as exc:
+                detail = f"unavailable at {database_path}: {exc}"
+        statuses.insert(0, ServiceStatus("database", db_running, detail))
+        return tuple(statuses)
+
+    def wait_until_ready(self, timeout_seconds: int = 180) -> list[str]:
+        checks = {
+            "llama.cpp": "http://localhost:8080/health",
+            "FastAPI": "http://localhost:8000/api/v1/health",
+            "Vue": "http://localhost:5173/",
+        }
+        deadline = time.monotonic() + timeout_seconds
+        pending = dict(checks)
+        while pending and time.monotonic() < deadline:
+            for name, url in tuple(pending.items()):
+                if self.http_ok(url):
+                    pending.pop(name)
+            if pending:
+                time.sleep(1)
+        return [f"{name} did not become healthy at {url}" for name, url in pending.items()]
+
+    def show_logs(self, *, lines: int = 80, follow: bool = False) -> int:
+        files = [self.paths.logs / f"{name}.log" for name in ("llm", "api", "web")]
+        existing = [path for path in files if path.is_file()]
+        if not existing:
+            print(f"No Knemora logs exist under {self.paths.logs}.")
+            return 1
+        command = ["tail", f"-{max(1, lines)}"]
+        if follow:
+            command.append("-f")
+        command.extend(str(path) for path in existing)
+        return subprocess.run(command, check=False).returncode
+
+    def current_mode(self) -> str:
+        try:
+            mode = json.loads((self.paths.runtime / "mode.json").read_text())["mode"]
+        except (OSError, ValueError, KeyError):
+            return "normal"
+        return mode if isinstance(mode, str) else "normal"
+
+    def current_web_search_enabled(self) -> bool:
+        try:
+            enabled = json.loads((self.paths.runtime / "mode.json").read_text()).get(
+                "web_search_enabled", False
+            )
+        except (OSError, ValueError, AttributeError):
+            return False
+        return enabled is True
+
+    def _write_mode(self, mode: str, *, web_search_enabled: bool) -> None:
+        self.paths.runtime.mkdir(parents=True, exist_ok=True)
+        (self.paths.runtime / "mode.json").write_text(
+            json.dumps(
+                {"mode": mode, "web_search_enabled": web_search_enabled},
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+    @staticmethod
+    def _api_mode_matches(*, demo: bool) -> bool:
+        try:
+            with urllib.request.urlopen(  # noqa: S310
+                "http://localhost:8000/api/v1/system", timeout=2
+            ) as response:
+                payload = json.load(response)
+        except (OSError, ValueError, TypeError):
+            return False
+        metadata = payload.get("demo") if isinstance(payload, dict) else None
+        return isinstance(metadata, dict) and metadata.get("active") is demo
+
+    @staticmethod
+    def http_ok(url: str) -> bool:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:  # noqa: S310
+                return 200 <= int(response.status) < 300
+        except (urllib.error.URLError, TimeoutError):
+            return False
+
+    @staticmethod
+    def _read_pid(path: Path) -> int | None:
+        try:
+            value = int(path.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        return value if value > 1 else None
+
+    @staticmethod
+    def _pid_running(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except (OSError, ProcessLookupError):
+            return False
+        return True

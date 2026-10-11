@@ -1,0 +1,19 @@
+{
+  "canonical_prompt": "Which gateway, owner, policy, and freeze day apply to ORBIT-LANTERN? Cite sources.",
+  "demo": true,
+  "expected_facts": {
+    "freeze_day": "Wednesday",
+    "gateway": "Cedar Gate",
+    "owner": "Atlas Platform Team",
+    "policy": "DEV-POL-017",
+    "project": "ORBIT-LANTERN"
+  },
+  "expected_min_wiki_pages": 100,
+  "generated_wiki_pages": 120,
+  "non_production": true,
+  "organization": "Northstar Labs",
+  "preset": "development",
+  "synthetic": true,
+  "topic": "Development",
+  "version": 1
+}

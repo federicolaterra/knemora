@@ -1,0 +1,206 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    @apply bg-paper font-sans text-ink;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    min-width: 320px;
+    min-height: 100%;
+    margin: 0;
+    @apply bg-paper;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    color: inherit;
+    font: inherit;
+  }
+
+  input,
+  textarea,
+  select {
+    outline: none;
+  }
+
+  :where(*):focus,
+  :where(*):focus-visible {
+    outline: none !important;
+  }
+
+  :where(input:not([type="file"]), textarea, select):focus {
+    border-color: theme("colors.brand.DEFAULT") !important;
+    box-shadow: 0 0 0 3px rgb(51 209 51 / 9%) !important;
+  }
+
+  select {
+    padding-right: 36px !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23687772' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 12px center !important;
+    font-size: 12px !important;
+    font-weight: 400 !important;
+    appearance: none;
+  }
+
+  option {
+    padding: 8px 12px;
+    font-weight: 400;
+  }
+
+  input[type="checkbox"] {
+    display: inline-grid;
+    flex: none;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    background: #fff;
+    border: 1px solid theme("colors.line");
+    border-radius: 3px;
+    appearance: none;
+    place-content: center;
+  }
+
+  input[type="checkbox"]::before {
+    width: 8px;
+    height: 8px;
+    content: "";
+    background: #fff;
+    clip-path: polygon(14% 44%, 0 65%, 40% 100%, 100% 18%, 80% 0, 38% 62%);
+    transform: scale(0);
+  }
+
+  input[type="checkbox"]:checked {
+    background: theme("colors.brand.DEFAULT");
+    border-color: theme("colors.brand.DEFAULT");
+  }
+
+  input[type="checkbox"]:checked::before {
+    transform: scale(1);
+  }
+
+  small {
+    font-size: 14px;
+  }
+
+  label {
+    color: theme("colors.ink") !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+  }
+
+  label :is(input, select, textarea) {
+    font-weight: 400 !important;
+  }
+
+  button {
+    @apply cursor-pointer disabled:cursor-not-allowed disabled:opacity-[0.55];
+  }
+
+  a {
+    color: inherit;
+  }
+
+  ::selection {
+    @apply bg-brand text-white;
+  }
+}
+button,
+.button {
+  transition:
+    transform 0.16s ease,
+    opacity 0.16s ease,
+    color 0.16s ease,
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+button:not(:disabled):hover,
+.button:hover {
+  transform: translateY(-1px);
+}
+.summary-card-copy h2,
+.summary-card-copy > div > strong {
+  font-size: 14px !important;
+}
+.summary-card-copy p,
+.summary-card-copy > div > small {
+  font-size: 13px !important;
+}
+.update-status-card strong {
+  font-size: 12px !important;
+}
+.update-status-card small {
+  font-size: 11px !important;
+}
+.stage-rail li::before {
+  position: absolute;
+  top: 10px;
+  right: 50%;
+  left: -50%;
+  z-index: 0;
+  height: 2px;
+  content: "";
+  background: #e0e5e2;
+}
+.stage-rail li:first-child::before {
+  display: none;
+}
+.stage-rail .complete::before {
+  background: theme("colors.brand.DEFAULT");
+}
+.stage-rail .current::before {
+  background: theme("colors.brand.DEFAULT");
+}
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+.markdown-body a {
+  color: theme("colors.brand.DEFAULT");
+  font-weight: 500;
+}
+.markdown-body table {
+  margin: 12px 0;
+  font-family: Outfit, sans-serif;
+}
+.markdown-body code {
+  padding: 2px 4px;
+  background: #ebefec;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+.markdown-body pre {
+  padding: 13px;
+  overflow: auto;
+  color: #e7eeea;
+  background: #192620;
+  border-radius: 7px;
+}
+body.graph-expanded-open {
+  overflow: hidden;
+}
+@media (max-width: 1020px) {
+  .stage-rail li:nth-child(6)::before {
+    display: none;
+  }
+}
+@media (max-width: 500px) {
+  .stage-rail li:nth-child(odd)::before {
+    display: none;
+  }
+}

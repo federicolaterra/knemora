@@ -1,0 +1,12 @@
+{
+  "formatVersion": 1,
+  "provider": "github",
+  "repository": "federicolaterra/knemora",
+  "transport": "https://github.com/federicolaterra/knemora.git",
+  "channels": {
+    "stable": {
+      "kind": "git-branch",
+      "ref": "master"
+    }
+  }
+}

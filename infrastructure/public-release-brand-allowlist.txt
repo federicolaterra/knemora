@@ -1,0 +1,18 @@
+# Explicit, documented compatibility surfaces
+Makefile
+knowledge/.pharmatrace-wiki/*
+apps/api/app/config.py
+apps/api/app/knowledge/store.py
+apps/api/migrations/versions/5fd2a7619c10_milestone_07_security.py
+apps/api/tests/test_config.py
+apps/api/tests/test_knowledge.py
+apps/web/src/api/client.ts
+apps/web/src/App.spec.ts
+infrastructure/scripts/benchmark-local-llm.sh
+infrastructure/scripts/check-local-llm.sh
+infrastructure/scripts/run-llama-server.sh
+infrastructure/scripts/start-local-release.sh
+
+# The checker and allowlist necessarily describe the forbidden legacy term.
+infrastructure/scripts/audit-public-release.py
+infrastructure/public-release-brand-allowlist.txt

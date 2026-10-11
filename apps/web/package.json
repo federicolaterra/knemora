@@ -1,0 +1,54 @@
+{
+  "name": "@knemora/web",
+  "private": true,
+  "version": "0.1.0-alpha",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/outfit": "^5.3.0",
+    "@lucide/vue": "^1.48.0",
+    "@vueuse/core": "^13.9.0",
+    "chart.js": "^4.5.1",
+    "dompurify": "^3.4.16",
+    "graphology": "0.26.0",
+    "graphology-layout-forceatlas2": "0.10.1",
+    "marked": "^16.4.2",
+    "pinia": "^3.0.4",
+    "sigma": "3.0.3",
+    "vue": "^3.5.21",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@playwright/test": "^1.63.0",
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "^22.10.5",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "2.4.6",
+    "autoprefixer": "^10.6.1",
+    "eslint": "^9.17.0",
+    "eslint-plugin-vue": "^9.32.0",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.5.28",
+    "prettier": "^3.4.2",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~5.7.2",
+    "typescript-eslint": "8.71.1",
+    "vite": "^6.0.6",
+    "vitest": "^4.1.11",
+    "vue-tsc": "^2.2.0"
+  }
+}

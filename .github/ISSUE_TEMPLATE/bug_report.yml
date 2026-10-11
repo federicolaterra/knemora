@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a reproducible Knemora defect without private data.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe expected and actual behavior.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Knemora version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic data and redact secrets, tokens, documents, and Wiki content.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, deployment method, Python/Node versions, and sanitized logs.

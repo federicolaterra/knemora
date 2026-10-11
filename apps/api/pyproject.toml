@@ -1,0 +1,63 @@
+[project]
+name = "knemora-api"
+version = "0.1.0a0"
+description = "FastAPI application boundary for Knemora"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "alembic>=1.15,<2.0",
+  "ddgs>=9.9,<10.0",
+  "fastapi>=0.115,<1.0",
+  "google-adk>=2.0,<3.0",
+  "httpx>=0.28,<1.0",
+  "openpyxl>=3.1,<4.0",
+  "polars>=1.30,<2.0",
+  "psycopg[binary]>=3.2,<4.0",
+  "pydantic-settings>=2.7,<3.0",
+  "pypdf>=6.0,<7.0",
+  "python-docx>=1.1,<2.0",
+  "python-multipart>=0.0.20,<1.0",
+  "pyyaml>=6.0,<7.0",
+  "sqlalchemy>=2.0,<3.0",
+  "uvicorn[standard]>=0.34,<1.0",
+]
+
+[dependency-groups]
+dev = [
+  "mypy>=1.15,<2.0",
+  "pytest>=8.3,<9.0",
+  "pytest-asyncio>=0.25,<2.0",
+  "ruff>=0.11,<1.0",
+]
+
+[project.optional-dependencies]
+eval = [
+  "google-adk[eval]>=2.0,<3.0",
+  "google-cloud-aiplatform[evaluation]>=1.156.0",
+]
+lint = [
+  "codespell>=2.2,<3.0",
+  "ruff>=0.11,<1.0",
+  "ty>=0.0.1a0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"knemora_bootstrap/development_preset.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]

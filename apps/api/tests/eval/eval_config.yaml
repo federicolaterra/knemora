@@ -1,0 +1,20 @@
+metrics_to_run:
+  - non_empty_visible_response
+  - no_hidden_reasoning_tags
+
+custom_metrics:
+  - name: non_empty_visible_response
+    custom_function: |
+      def evaluate(instance):
+          response = instance.get("response") or {}
+          text = "".join(part.get("text", "") for part in response.get("parts", []))
+          return {"score": 1 if text.strip() else 0}
+
+  - name: no_hidden_reasoning_tags
+    custom_function: |
+      def evaluate(instance):
+          response = instance.get("response") or {}
+          text = "".join(part.get("text", "") for part in response.get("parts", []))
+          lowered = text.lower()
+          visible = "<think>" not in lowered and "</think>" not in lowered
+          return {"score": 1 if visible else 0}
