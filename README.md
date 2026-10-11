@@ -6,7 +6,7 @@
   <img src="docs/assets/knemora-logo-white.png" alt="Knemora" width="420">
 </picture>
 
-### Open-source, Local-first AI Second Brain
+### Open-source, Local-first AI (SI) Second Brain
 
 <p>
   <img src="https://img.shields.io/badge/100%25-LOCAL%20BY%20DEFAULT-33D133?style=for-the-badge&amp;labelColor=17221F" alt="100% local by default">
@@ -21,7 +21,7 @@
 </div>
 
 Knemora is an open-source, local-first knowledge and agent platform with a native Second Brain
-graph, a portable Markdown Wiki, and local AI inference. It works without a mandatory cloud
+graph, a portable Markdown Wiki, and local AI (SI) inference. It works without a mandatory cloud
 service, external LLM API, vector database, or desktop knowledge application.
 
 This repository is prepared for its first public release, `v0.1.0-alpha`. It is alpha software
@@ -125,7 +125,7 @@ Automation can use `--non-interactive --yes --no-open`. Setup is idempotent, con
 already present in `.env` are preserved, and stop/restart never delete data. The UI is available at
 `http://localhost:5173` after either start command reaches `READY`.
 
-## System and AI Core Architecture
+## System and AI (SI) Core Architecture
 
 Knemora runs a Vue 3 interface against an authenticated FastAPI boundary on the local machine.
 Google ADK provides bounded root-agent orchestration through typed application tools, while a
@@ -137,7 +137,7 @@ files keep operational data, sources, datasets, and knowledge local.
 
 ![Knemora system architecture](docs/assets/knemora-system-architecture-github.png)
 
-![Knemora AI core architecture](docs/assets/knemora-core-ai-architecture-github.png)
+![Knemora AI (SI) core architecture](docs/assets/knemora-core-ai-architecture-github.png)
 
 ## Updates
 
@@ -193,7 +193,7 @@ newest active sources. Search and filters are applied before authorized counts a
 the shared pager displays fixed groups of at most five numbered pages with one-page Prev/Next
 navigation.
 
-AI Chat keeps the eight most recently active conversations in its existing aside. **View all** opens
+AI (SI) Chat keeps the eight most recently active conversations in its existing aside. **View all** opens
 the authenticated `/chat/conversations` history table with server-side title search and 15 records
 per page. Conversation titles can be renamed inline; otherwise the first persisted user prompt
 provides a deterministic title without an external model call. Persisted prompt timestamps are
