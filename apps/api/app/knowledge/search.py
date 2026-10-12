@@ -350,10 +350,7 @@ class WikiRetrievalService:
         )
 
     def read_page(self, identifier: str, *, max_claims: int = 20) -> WikiEvidencePage:
-        page = self._authorized_page(identifier)
-        summary = self.store.resolve_page(page.id)
-        if summary is None:
-            raise WikiPageNotFoundError(identifier)
+        summary, page = self._snapshot_page(identifier, self._authorized_snapshot())
         claims: list[EvidenceClaim] = []
         relationships: list[EvidenceRelationship] = []
         allowed_page_ids = set(self._authorized_snapshot())
@@ -521,6 +518,7 @@ class WikiRetrievalService:
             (summary, page)
             for summary, page in snapshot.values()
             if identifier == page.id
+            or identifier == summary.path
             or key in {normalize_name(page.title), *(normalize_name(a) for a in page.aliases)}
         ]
         if not matches:

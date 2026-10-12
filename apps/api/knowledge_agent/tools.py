@@ -52,9 +52,11 @@ def _instrument_tool(tool: ToolCallable) -> ToolCallable:
 
 
 def _citation_payload(citation: Any) -> dict[str, Any]:
-    """Keep the citation fields the agent must quote without repeating internal IDs."""
+    """Keep the citation fields needed for quotation and authorized source drilldown."""
 
     return {
+        "wiki_path": citation.wiki_path,
+        "source_record_id": citation.source_record_id,
         "original_filename": citation.original_filename,
         "locator": citation.locator,
     }

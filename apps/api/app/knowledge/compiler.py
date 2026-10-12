@@ -323,13 +323,17 @@ class KnowledgeCompiler:
             raise CompilationNotReadyError(
                 f"Document version {version_id} is in state {ingestion_job.status}."
             )
-        records = tuple(
-            self.session.scalars(
-                select(SourceRecord)
-                .where(SourceRecord.document_version_id == version.id)
-                .order_by(SourceRecord.ordinal)
-            )
+        record_statement = select(SourceRecord).where(
+            SourceRecord.document_version_id == version.id
         )
+        active_record_ids = ingestion_job.processing_metadata.get("active_source_record_ids")
+        if isinstance(active_record_ids, list):
+            record_statement = record_statement.where(
+                SourceRecord.id.in_(
+                    [uuid.UUID(value) for value in active_record_ids if isinstance(value, str)]
+                )
+            )
+        records = tuple(self.session.scalars(record_statement.order_by(SourceRecord.ordinal)))
         if not records:
             raise CompilationNotReadyError("The normalized source contains no source records.")
         return document, version, records
@@ -345,15 +349,6 @@ class KnowledgeCompiler:
             select(DatasetRecord).where(DatasetRecord.document_version_id == version.id)
         )
         existing_pages = [page for _, page in self.store.page_snapshot()]
-        existing_identities = [
-            {
-                "id": page.id,
-                "type": page.type,
-                "title": page.title,
-                "aliases": page.aliases,
-            }
-            for page in existing_pages
-        ]
         source_tokens = tuple(
             WORD_TOKEN.findall(normalize_name("\n".join(record.content for record in records)))
         )
@@ -366,7 +361,9 @@ class KnowledgeCompiler:
                     "sha256": version.sha256,
                 },
                 "dataset_metadata": dataset.schema_metadata if dataset is not None else None,
-                "existing_page_identities": existing_identities,
+                # Resolution is deterministic after analysis. Keeping the catalog out of the
+                # model prompt prevents unrelated existing titles from priming its proposal.
+                "existing_page_identities": [],
                 "untrusted_source_records": [
                     {
                         "ordinal": record.ordinal,

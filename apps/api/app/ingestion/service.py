@@ -20,6 +20,7 @@ from app.db.models import (
     Document,
     DocumentVersion,
     IngestionJob,
+    KnowledgeCompilationJob,
     SourceRecord,
     User,
 )
@@ -259,6 +260,7 @@ class IngestionService:
             self._audit(owner.id, "ingestion.retried", "ingestion_job", job.id, {})
             self.session.commit()
             self._process(owner=owner, document=document, version=version, job=job, upload=upload)
+            self._invalidate_compilation(owner_id=owner.id, version_id=version.id)
         except Exception as exc:
             self._mark_failed(owner.id, job.id, version.id, exc)
             job = self.session.get(IngestionJob, job.id) or job
@@ -285,18 +287,32 @@ class IngestionService:
         self.session.commit()
         self._transition(job, IngestionStatus.NORMALIZING)
         markdown = render_extracted_markdown(parsed)
-        records = [
-            SourceRecord(
-                id=uuid.uuid4(),
-                document_version_id=version.id,
-                ordinal=ordinal,
-                content=block.content,
-                locator=block.locator,
-                parser_name=parsed.parser_name,
-                parser_version=parsed.parser_version,
+        existing_records = {
+            record.ordinal: record
+            for record in self.session.scalars(
+                select(SourceRecord).where(SourceRecord.document_version_id == version.id)
             )
-            for ordinal, block in enumerate(parsed.blocks, start=1)
-        ]
+        }
+        records: list[SourceRecord] = []
+        for ordinal, block in enumerate(parsed.blocks, start=1):
+            record = existing_records.get(ordinal)
+            if record is None:
+                record = SourceRecord(
+                    id=uuid.uuid4(),
+                    document_version_id=version.id,
+                    ordinal=ordinal,
+                    content=block.content,
+                    locator=block.locator,
+                    parser_name=parsed.parser_name,
+                    parser_version=parsed.parser_version,
+                )
+                self.session.add(record)
+            else:
+                record.content = block.content
+                record.locator = block.locator
+                record.parser_name = parsed.parser_name
+                record.parser_version = parsed.parser_version
+            records.append(record)
         metadata = self._metadata_payload(document, version, upload, parsed, records)
         original_path = self.storage.resolve_relative(version.storage_uri)
         extracted_path = original_path.parent / "extracted.md"
@@ -310,12 +326,8 @@ class IngestionService:
         version.extracted_uri = self.storage.relative_path(extracted_path)
         version.metadata_uri = self.storage.relative_path(metadata_path)
         self.session.execute(
-            delete(SourceRecord).where(SourceRecord.document_version_id == version.id)
-        )
-        self.session.execute(
             delete(DatasetRecord).where(DatasetRecord.document_version_id == version.id)
         )
-        self.session.add_all(records)
         if parsed.dataset_metadata is not None:
             self.session.add(
                 DatasetRecord(
@@ -328,6 +340,9 @@ class IngestionService:
             "parser_name": parsed.parser_name,
             "parser_version": parsed.parser_version,
         }
+        processing_metadata = dict(job.processing_metadata or {})
+        processing_metadata["active_source_record_ids"] = [str(record.id) for record in records]
+        job.processing_metadata = processing_metadata
         job.last_completed_stage = IngestionStatus.NORMALIZING
         self.session.commit()
         self._transition(job, IngestionStatus.READY_FOR_COMPILATION)
@@ -343,6 +358,31 @@ class IngestionService:
             self.storage.resolve_relative(job.processing_uri),
             self._processing_payload(job, version),
         )
+
+    def _invalidate_compilation(self, *, owner_id: uuid.UUID, version_id: uuid.UUID) -> None:
+        compilation = self.session.scalar(
+            select(KnowledgeCompilationJob).where(
+                KnowledgeCompilationJob.document_version_id == version_id
+            )
+        )
+        if compilation is None:
+            return
+        compilation.status = "QUEUED"
+        compilation.compilation_version = self.settings.knowledge_compilation_version
+        compilation.last_completed_stage = None
+        compilation.proposal = None
+        compilation.report = None
+        compilation.error = None
+        compilation.started_at = None
+        compilation.finished_at = None
+        self._audit(
+            owner_id,
+            "knowledge.compilation.invalidated",
+            "knowledge_compilation_job",
+            compilation.id,
+            {"document_version_id": str(version_id)},
+        )
+        self.session.commit()
 
     def _transition(self, job: IngestionJob, status: IngestionStatus) -> None:
         job.status = status

@@ -16,7 +16,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import Settings
 from app.db.base import Base
-from app.db.models import KnowledgeCompilationJob, WikiChange
+from app.db.models import KnowledgeCompilationJob, SourceRecord, WikiChange
 from app.ingestion.service import IngestionService
 from app.knowledge.compiler import SYSTEM_PROMPT, KnowledgeCompiler
 from app.knowledge.store import WikiStore
@@ -528,17 +528,7 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
             provider.requests[1].messages[1].content.removeprefix("UNTRUSTED_SOURCE_JSON\n")
         )
         assert "existing_wiki_pages" not in request_payload
-        assert request_payload["existing_page_identities"] == [
-            {
-                "aliases": [],
-                "id": aurora_after_rejection.json()["id"],
-                "title": "Project Aurora",
-                "type": "topic",
-            }
-        ]
-        assert all(
-            "claims" not in identity for identity in request_payload["existing_page_identities"]
-        )
+        assert request_payload["existing_page_identities"] == []
 
         retried_job = retried.json()
         assert retried_job["status"] == "COMPLETED"
@@ -554,6 +544,68 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
         }
         assert len(graph["edges"]) == 3
         assert all("uses" in edge["relations"] for edge in graph["edges"])
+
+    asyncio.run(exercise())
+
+
+def test_reprocess_preserves_source_record_identity_and_forces_a_new_compilation_attempt(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        provider = ProposalProvider(acme_proposal(), acme_proposal())
+        app = build_app(tmp_path, provider)
+        transport = ASGITransport(app=app)
+        source = b"Acme Corporation is headquartered in Valletta and uses Cold Chain."
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            uploaded = await client.post(
+                "/api/v1/documents",
+                files={"file": ("acme.md", source, "text/markdown")},
+            )
+            assert uploaded.status_code == 201, uploaded.text
+            body = uploaded.json()
+            version_id = uuid.UUID(body["document_version_id"])
+            first = await client.post(f"/api/v1/document-versions/{version_id}/compile")
+            assert first.status_code == 200, first.text
+            assert first.json()["status"] == "COMPLETED"
+
+            with Session(app.state.engine) as session:
+                before_ids = tuple(
+                    session.scalars(
+                        select(SourceRecord.id)
+                        .where(SourceRecord.document_version_id == version_id)
+                        .order_by(SourceRecord.ordinal)
+                    )
+                )
+
+            reprocessed = await client.post(
+                f"/api/v1/ingestion-jobs/{body['ingestion_job_id']}/reprocess"
+            )
+            original = await client.get(f"/api/v1/document-versions/{version_id}/original")
+            second = await client.post(f"/api/v1/document-versions/{version_id}/compile")
+
+        assert reprocessed.status_code == 200, reprocessed.text
+        assert reprocessed.json()["status"] == "READY_FOR_COMPILATION"
+        assert original.content == source
+        assert second.status_code == 200, second.text
+        assert second.json()["status"] == "COMPLETED"
+        assert second.json()["attempt_count"] == 2
+        assert len(provider.requests) == 2
+        with Session(app.state.engine) as session:
+            after_ids = tuple(
+                session.scalars(
+                    select(SourceRecord.id)
+                    .where(SourceRecord.document_version_id == version_id)
+                    .order_by(SourceRecord.ordinal)
+                )
+            )
+            compilation = session.scalar(
+                select(KnowledgeCompilationJob).where(
+                    KnowledgeCompilationJob.document_version_id == version_id
+                )
+            )
+            assert compilation is not None
+            assert compilation.status == "COMPLETED"
+        assert after_ids == before_ids
 
     asyncio.run(exercise())
 

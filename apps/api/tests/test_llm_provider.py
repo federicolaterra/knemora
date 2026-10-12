@@ -132,3 +132,47 @@ def test_local_provider_sends_tools_and_parses_function_calls() -> None:
     import asyncio
 
     asyncio.run(exercise())
+
+
+def test_local_provider_forwards_required_named_tool_choice() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "read_wiki_page"},
+        }
+        return httpx.Response(
+            200,
+            json={
+                "model": "configured-model",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "done"}, "finish_reason": "stop"}
+                ],
+            },
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = LocalLlamaCppProvider(
+                base_url="http://llama.test", model="configured-model", client=client
+            )
+            await provider.chat(
+                ChatRequest(
+                    messages=(ChatMessage(role="user", content="Read ACME"),),
+                    tools=(
+                        ChatToolDefinition(
+                            name="read_wiki_page",
+                            description="Read a Wiki page.",
+                            parameters={"type": "object", "properties": {}},
+                        ),
+                    ),
+                    tool_choice={
+                        "type": "function",
+                        "function": {"name": "read_wiki_page"},
+                    },
+                )
+            )
+
+    import asyncio
+
+    asyncio.run(exercise())

@@ -1,17 +1,32 @@
 import logging
+import os
+from pathlib import Path
 
 from pytest import LogCaptureFixture, MonkeyPatch
 
 from app.config import REPOSITORY_ROOT, Settings
 
 
-def test_storage_paths_resolve_from_repository_root() -> None:
+def test_storage_paths_resolve_from_repository_root(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("KNEMORA_SOURCE_STORE_PATH")
+    monkeypatch.delenv("KNEMORA_KNOWLEDGE_PATH")
     settings = Settings(_env_file=None)
 
     assert settings.source_store_path == REPOSITORY_ROOT / "data/sources"
     assert settings.knowledge_path == REPOSITORY_ROOT / "knowledge"
     assert settings.llm_max_output_tokens == 1024
     assert settings.knowledge_compilation_max_output_tokens == 2048
+
+
+def test_pytest_runtime_paths_are_isolated_from_the_user_home() -> None:
+    test_home = Path(os.environ["KNEMORA_HOME"]).resolve()
+    settings = Settings(_env_file=None)
+
+    assert test_home.name.startswith("knemora-pytest-")
+    assert test_home != Path.home() / ".knemora"
+    assert settings.database_url == f"sqlite+pysqlite:///{test_home / 'data' / 'knemora.db'}"
+    assert settings.source_store_path == test_home / "sources"
+    assert settings.knowledge_path == test_home / "wiki"
 
 
 def test_knemora_environment_takes_precedence_over_legacy_name(monkeypatch: MonkeyPatch) -> None:

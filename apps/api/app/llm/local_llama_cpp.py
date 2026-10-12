@@ -89,7 +89,7 @@ class LocalLlamaCppProvider:
                 }
                 for tool in request.tools
             ]
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = request.tool_choice or "auto"
         if stream:
             payload["stream_options"] = {"include_usage": True}
         return payload

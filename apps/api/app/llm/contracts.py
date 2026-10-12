@@ -52,6 +52,7 @@ class ChatRequest(BaseModel):
     max_tokens: int = Field(default=1024, ge=1)
     response_schema: dict[str, Any] | None = None
     tools: tuple[ChatToolDefinition, ...] = ()
+    tool_choice: str | dict[str, Any] | None = None
 
 
 class ChatUsage(BaseModel):
