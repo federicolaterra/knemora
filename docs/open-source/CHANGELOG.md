@@ -6,6 +6,19 @@ and established interfaces.
 
 ## [Unreleased]
 
+### Added
+
+- GGUF-derived model context profiles, unified-memory startup preflight, per-model context
+  overrides, and CLI diagnostics for advertised, configured, and effective context.
+- Provider-neutral prompt budgeting with bounded history/tool evidence and actionable context or
+  truncation errors.
+
+### Fixed
+
+- Failed model startup now restores the prior selection without initiating knowledge work.
+- Intentional compilation now requires each existing-page proposal to be grounded in every cited
+  source record and skips byte-identical Wiki writes, index rebuilds, and manifest rewrites.
+
 ## [0.1.0-alpha] - 2026-10-11
 
 ### Added

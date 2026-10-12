@@ -222,6 +222,11 @@ def _populate_installation(paths: AppPaths, *, email: str, marker: str) -> Setti
                 "quantization": "Q3_K_M",
                 "context_tokens": 8192,
                 "sha256": "b" * 64,
+                "previous_selection": {
+                    "model_id": "older-model",
+                    "path": str(paths.models / "older.gguf"),
+                    "context_tokens": 4096,
+                },
             }
         ),
         encoding="utf-8",
@@ -314,6 +319,7 @@ def test_full_backup_is_portable_complete_and_excludes_secrets_and_models(
         selection = json.loads(archive.read("config/model-selection.json"))
         registry = json.loads(archive.read("config/models.json"))
         assert "path" not in selection
+        assert "path" not in selection["previous_selection"]
         assert registry["models"][0]["local_path"] == ""
 
 

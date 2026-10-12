@@ -29,6 +29,8 @@ from app.llm import (
     LLMProvider,
     LocalLlamaCppProvider,
 )
+from app.llm.budget import fit_request_to_context
+from app.llm.errors import LLMResponseTruncatedError
 from app.observability import metrics_registry
 from knowledge_agent.tools import ToolCallable, create_agent_tools
 
@@ -228,7 +230,9 @@ def _knowledge_search_query(user_text: str) -> str:
     return " ".join(meaningful) or user_text
 
 
-def _forced_retrieval_call(request: ChatRequest) -> ChatToolCall | None:
+def _forced_retrieval_call(
+    request: ChatRequest, *, context_tokens: int | None = None
+) -> ChatToolCall | None:
     """Deterministically enter owner-scoped Wiki retrieval for each knowledge turn."""
 
     tool_names = {tool.name for tool in request.tools}
@@ -263,7 +267,10 @@ def _forced_retrieval_call(request: ChatRequest) -> ChatToolCall | None:
             return ChatToolCall(
                 id=str(uuid.uuid4()),
                 name="read_wiki_page",
-                arguments={"identifier": results[0]["id"], "max_claims": 20},
+                arguments={
+                    "identifier": results[0]["id"],
+                    "max_claims": max(4, min(20, (context_tokens or 8192) // 512)),
+                },
             )
     return None
 
@@ -425,7 +432,7 @@ class ProviderLlm(BaseLlm):
         elif isinstance(schema, type) and issubclass(schema, BaseModel):
             response_schema = schema.model_json_schema()
 
-        return ChatRequest(
+        request = ChatRequest(
             messages=tuple(messages),
             temperature=(
                 0.1 if llm_request.config.temperature is None else llm_request.config.temperature
@@ -435,6 +442,7 @@ class ProviderLlm(BaseLlm):
             tools=_tool_definitions(llm_request),
             tool_choice=_tool_choice(messages) if _tool_definitions(llm_request) else None,
         )
+        return fit_request_to_context(request, self.provider.capabilities.max_context_tokens)
 
     @staticmethod
     def _record_call(request: ChatRequest, response: Any, started: float) -> None:
@@ -465,7 +473,10 @@ class ProviderLlm(BaseLlm):
     ) -> AsyncGenerator[LlmResponse, None]:
         request = self._request(llm_request)
         if request.tools:
-            if forced_call := _forced_retrieval_call(request):
+            if forced_call := _forced_retrieval_call(
+                request,
+                context_tokens=self.provider.capabilities.max_context_tokens,
+            ):
                 yield LlmResponse(
                     content=types.Content(
                         role="model",
@@ -486,6 +497,11 @@ class ProviderLlm(BaseLlm):
             started = time.monotonic()
             response = await self.provider.chat(request)
             self._record_call(request, response, started)
+            if response.finish_reason == "length":
+                raise LLMResponseTruncatedError(
+                    "The local model reached its output limit before completing the answer. "
+                    "Narrow the question or increase the validated output/context budget."
+                )
             if response.message.tool_calls:
                 parts = [
                     types.Part(
@@ -517,6 +533,11 @@ class ProviderLlm(BaseLlm):
             started = time.monotonic()
             response = await self.provider.chat(request)
             self._record_call(request, response, started)
+            if response.finish_reason == "length":
+                raise LLMResponseTruncatedError(
+                    "The local model reached its output limit before completing the answer. "
+                    "Narrow the question or increase the validated output/context budget."
+                )
             visible = strip_hidden_reasoning(response.message.content)
             yield LlmResponse(
                 content=types.Content(role="model", parts=[types.Part.from_text(text=visible)]),
@@ -529,7 +550,10 @@ class ProviderLlm(BaseLlm):
 
         raw = ""
         emitted = ""
+        finish_reason: str | None = None
         async for chunk in self.provider.stream(request):
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
             raw += chunk.delta
             visible = strip_hidden_reasoning(raw)
             if visible.startswith(emitted):
@@ -543,6 +567,11 @@ class ProviderLlm(BaseLlm):
                         partial=True,
                         model_version=chunk.model,
                     )
+        if finish_reason == "length":
+            raise LLMResponseTruncatedError(
+                "The local model reached its output limit before completing the answer. "
+                "Narrow the question or increase the validated output/context budget."
+            )
         final_text = strip_hidden_reasoning(raw)
         yield LlmResponse(
             content=types.Content(role="model", parts=[types.Part.from_text(text=final_text)]),

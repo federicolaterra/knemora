@@ -79,7 +79,9 @@ WORD_TOKEN = re.compile(r"\w+", re.UNICODE)
 
 
 def _unique_provenance(values: Sequence[ProvenanceRef]) -> tuple[ProvenanceRef, ...]:
-    by_key = {(item.source_record_id, item.compilation_version): item for item in values}
+    by_key: dict[tuple[str, str], ProvenanceRef] = {}
+    for item in values:
+        by_key.setdefault((item.source_record_id, item.compilation_version), item)
     return tuple(by_key[key] for key in sorted(by_key))
 
 
@@ -158,12 +160,13 @@ class KnowledgeCompiler:
 
                 self._require_source_active(owner_id, version.id)
                 self._transition(job, CompilationStatus.APPLYING)
-                lint = self.store.apply_pages_transactionally(pages)
+                lint = self.store.apply_pages_transactionally(pages) if pages else self.store.lint()
                 job.last_completed_stage = CompilationStatus.APPLYING
                 self.session.commit()
 
                 self._transition(job, CompilationStatus.INDEXING)
-                self.store.rebuild_index()
+                if pages:
+                    self.store.rebuild_index()
                 job.last_completed_stage = CompilationStatus.INDEXING
                 self.session.commit()
 
@@ -193,14 +196,15 @@ class KnowledgeCompiler:
                     duration_ms=int((time.monotonic() - started) * 1000),
                     lint=lint,
                 )
-                self.store.write_source_manifest(
-                    document_id=str(document.id),
-                    document_version_id=str(version.id),
-                    original_filename=document.original_filename,
-                    sha256=version.sha256,
-                    storage_uri=version.storage_uri,
-                    page_titles=[page.title for page in pages],
-                )
+                if pages:
+                    self.store.write_source_manifest(
+                        document_id=str(document.id),
+                        document_version_id=str(version.id),
+                        original_filename=document.original_filename,
+                        sha256=version.sha256,
+                        storage_uri=version.storage_uri,
+                        page_titles=[page.title for page in pages],
+                    )
                 self.store.append_log(
                     str(job.id),
                     [
@@ -349,9 +353,6 @@ class KnowledgeCompiler:
             select(DatasetRecord).where(DatasetRecord.document_version_id == version.id)
         )
         existing_pages = [page for _, page in self.store.page_snapshot()]
-        source_tokens = tuple(
-            WORD_TOKEN.findall(normalize_name("\n".join(record.content for record in records)))
-        )
         for batch in self._record_batches(records):
             payload = {
                 "source_identity": {
@@ -402,7 +403,10 @@ class KnowledgeCompiler:
                 normalized = self._normalize_batch_ordinals(proposal, batch)
                 self._validate_existing_page_grounding(
                     normalized,
-                    source_tokens=source_tokens,
+                    record_tokens={
+                        record.ordinal: tuple(WORD_TOKEN.findall(normalize_name(content)))
+                        for record, content in batch
+                    },
                     existing_pages=existing_pages,
                 )
                 proposals.append(normalized)
@@ -435,7 +439,7 @@ class KnowledgeCompiler:
     def _validate_existing_page_grounding(
         proposal: KnowledgeProposal,
         *,
-        source_tokens: tuple[str, ...],
+        record_tokens: dict[int, tuple[str, ...]],
         existing_pages: Sequence[WikiPage],
     ) -> None:
         """Reject model attempts to attach a new source to unrelated existing pages."""
@@ -457,9 +461,19 @@ class KnowledgeCompiler:
             )
             if existing is None:
                 continue
-            if not any(
-                KnowledgeCompiler._contains_identity(source_tokens, name)
-                for name in (existing.title, *existing.aliases)
+            referenced_ordinals = {
+                ordinal for claim in candidate.claims for ordinal in claim.source_record_ordinals
+            } | {
+                ordinal
+                for relationship in candidate.relationships
+                for ordinal in relationship.source_record_ordinals
+            }
+            if not referenced_ordinals or any(
+                not any(
+                    KnowledgeCompiler._contains_identity(record_tokens.get(ordinal, ()), name)
+                    for name in (existing.title, *existing.aliases)
+                )
+                for ordinal in referenced_ordinals
             ):
                 ungrounded.add(existing.title)
         if ungrounded:
@@ -712,6 +726,7 @@ class KnowledgeCompiler:
         result: list[WikiPage] = []
         for page_id, candidates in proposals_by_id.items():
             page = pages[page_id]
+            is_created = page_id in created_ids
             aliases = list(page.aliases)
             topics = list(page.topics)
             claims = list(page.claims)
@@ -719,10 +734,11 @@ class KnowledgeCompiler:
             original_links = {(item.relation, item.target_id) for item in relationships}
 
             for candidate in candidates:
-                if normalize_name(candidate.title) != normalize_name(page.title):
-                    aliases.append(candidate.title)
-                aliases.extend(candidate.aliases)
-                topics.extend(candidate.topics)
+                if is_created:
+                    if normalize_name(candidate.title) != normalize_name(page.title):
+                        aliases.append(candidate.title)
+                    aliases.extend(candidate.aliases)
+                    topics.extend(candidate.topics)
                 for claim_proposal in candidate.claims:
                     provenance = self._provenance(
                         document,
@@ -849,31 +865,39 @@ class KnowledgeCompiler:
                 {(item.relation, item.target_id) for item in relationships} - original_links
             )
             provenance = _unique_provenance(
-                [source for claim in claims for source in claim.provenance]
-                + [source for relationship in relationships for source in relationship.provenance]
+                [
+                    *page.provenance,
+                    *(source for claim in claims for source in claim.provenance),
+                    *(
+                        source
+                        for relationship in relationships
+                        for source in relationship.provenance
+                    ),
+                ]
             )
-            result.append(
-                page.model_copy(
-                    update={
-                        "aliases": tuple(
-                            dict.fromkeys(
-                                alias.strip()
-                                for alias in aliases
-                                if alias.strip()
-                                and normalize_name(alias) != normalize_name(page.title)
-                            )
-                        ),
-                        "topics": tuple(
-                            dict.fromkeys(topic.strip() for topic in topics if topic.strip())
-                        ),
-                        "updated_at": now,
-                        "compilation_version": self.settings.knowledge_compilation_version,
-                        "provenance": provenance,
-                        "claims": tuple(claims),
-                        "relationships": tuple(relationships),
-                    }
-                )
+            candidate_page = page.model_copy(
+                update={
+                    "aliases": tuple(
+                        dict.fromkeys(
+                            alias.strip()
+                            for alias in aliases
+                            if alias.strip() and normalize_name(alias) != normalize_name(page.title)
+                        )
+                    ),
+                    "topics": tuple(
+                        dict.fromkeys(topic.strip() for topic in topics if topic.strip())
+                    ),
+                    "compilation_version": self.settings.knowledge_compilation_version,
+                    "provenance": provenance,
+                    "claims": tuple(claims),
+                    "relationships": tuple(relationships),
+                }
             )
+            changed = is_created or candidate_page.model_dump(
+                exclude={"updated_at"}
+            ) != page.model_dump(exclude={"updated_at"})
+            if changed:
+                result.append(candidate_page.model_copy(update={"updated_at": now}))
         return tuple(result), created_ids, links_created, tuple(conflicts), tuple(warnings)
 
     def _provenance(

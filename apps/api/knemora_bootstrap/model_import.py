@@ -23,6 +23,8 @@ from knemora_bootstrap.models import (
     ModelManager,
     ModelRegistry,
     ModelSpec,
+    model_metadata_fields,
+    read_gguf_metadata,
     sha256_file,
     validate_gguf,
 )
@@ -333,6 +335,7 @@ class ModelImporter:
                 f"the partial file remains resumable at {partial}."
             )
         validate_gguf(partial)
+        metadata_fields = model_metadata_fields(read_gguf_metadata(partial))
         actual_checksum = sha256_file(partial)
         if artifact.sha256 is not None and actual_checksum != artifact.sha256:
             raise ModelError(
@@ -344,6 +347,11 @@ class ModelImporter:
         if existing_source is not None:
             return existing_source
         recommended_memory = max(1, math.ceil(artifact.size_bytes * 1.25 / 1024**3))
+        advertised_context = metadata_fields.get("advertised_context_tokens")
+        preferred_context = min(
+            8192,
+            advertised_context if isinstance(advertised_context, int) else 4096,
+        )
         model = ModelSpec(
             id=model_id,
             display_name=f"{reference.repository.rsplit('/', 1)[-1]} {reference.variant}",
@@ -357,12 +365,50 @@ class ModelImporter:
             size_bytes=actual_size,
             required_free_bytes=actual_size + margin,
             recommended_memory_gb=recommended_memory,
-            context_tokens=4096,
+            context_tokens=preferred_context,
             license_url=artifact.license_reference,
             origin="user",
             local_path=str(destination.resolve()),
             imported_at=datetime.now(UTC).isoformat(),
             verification_status="custom-unverified-by-knemora",
             compatibility_status="not-checked",
+            metadata_architecture=(
+                str(metadata_fields.get("metadata_architecture"))
+                if metadata_fields.get("metadata_architecture")
+                else ""
+            ),
+            advertised_context_tokens=(
+                value
+                if isinstance((value := metadata_fields.get("advertised_context_tokens")), int)
+                else None
+            ),
+            embedding_length=(
+                value
+                if isinstance((value := metadata_fields.get("embedding_length")), int)
+                else None
+            ),
+            block_count=(
+                value if isinstance((value := metadata_fields.get("block_count")), int) else None
+            ),
+            attention_head_count=(
+                value
+                if isinstance((value := metadata_fields.get("attention_head_count")), int)
+                else None
+            ),
+            attention_head_count_kv=(
+                value
+                if isinstance((value := metadata_fields.get("attention_head_count_kv")), int)
+                else None
+            ),
+            attention_key_length=(
+                value
+                if isinstance((value := metadata_fields.get("attention_key_length")), int)
+                else None
+            ),
+            attention_value_length=(
+                value
+                if isinstance((value := metadata_fields.get("attention_value_length")), int)
+                else None
+            ),
         )
         return self.registry.register(model)

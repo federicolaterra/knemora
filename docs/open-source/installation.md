@@ -63,8 +63,9 @@ separate from Knemora's MIT license.
 ./knemora setup --model qwen3-8b-q3-k-m
 ```
 
-Model hardware guidance is advisory. Explicit supported selections are respected and update only
-Knemora-owned runtime selection metadata.
+Model memory estimates are conservative preflight safeguards rather than load guarantees. Unsafe
+selections fail before startup and update only Knemora-owned runtime selection metadata after
+application preparation succeeds.
 
 To use an external Hugging Face GGUF, import it before setup. The reference is intentionally
 explicit and resolves one artifact; it never causes repository code to execute:
@@ -75,6 +76,22 @@ explicit and resolves one artifact; it never causes repository code to execute:
 ./knemora models
 ./knemora setup --model example-q3-k-m
 ```
+
+Knemora reads trustworthy GGUF architecture/context metadata, combines it with the selected model
+profile and current safe host-memory budget, and records the effective context plus its rationale in
+`KNEMORA_HOME/config/model.json`. Inspect it with `./knemora model info MODEL_ID`. An operator can
+set a validated per-model override with:
+
+```bash
+./knemora setup --model MODEL_ID --context-tokens 8192
+```
+
+The override must be at least 4,096 tokens, cannot exceed the GGUF-advertised or validated maximum,
+and must pass memory preflight. `KNEMORA_LLM_CONTEXT_TOKENS` remains an optional environment
+override for manual installations. Precedence is the setup flag, a persisted per-model override,
+the environment override, the curated/GGUF-derived profile, and finally a conservative fallback.
+Explicit invalid or unsafe values fail without changing the active model. A runtime allocation
+failure restores the prior selection; it never initiates Wiki compilation or reprocessing.
 
 Imported metadata persists in `~/.knemora/config/models.json`, while managed weights live under
 `~/.knemora/models`. Custom entries are unverified by Knemora even after their checksum and GGUF

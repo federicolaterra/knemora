@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import shutil
 import struct
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, cast
 
@@ -48,6 +49,14 @@ class ModelSpec:
     imported_at: str = ""
     verification_status: str = "knemora-tested"
     compatibility_status: str = "knemora-tested"
+    metadata_architecture: str = ""
+    advertised_context_tokens: int | None = None
+    embedding_length: int | None = None
+    block_count: int | None = None
+    attention_head_count: int | None = None
+    attention_head_count_kv: int | None = None
+    attention_key_length: int | None = None
+    attention_value_length: int | None = None
 
     @property
     def download_url(self) -> str:
@@ -74,6 +83,12 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         required_free_bytes=5_500_000_000,
         recommended_memory_gb=8,
         context_tokens=8192,
+        metadata_architecture="qwen3",
+        advertised_context_tokens=40_960,
+        embedding_length=4_096,
+        block_count=36,
+        attention_head_count=32,
+        attention_head_count_kv=8,
         license_url="https://huggingface.co/ISTA-DASLab/Qwen3-8B-GGUF-GSQ",
     ),
     "qwen3.8-27b-iq2-s": ModelSpec(
@@ -90,6 +105,8 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         required_free_bytes=11_000_000_000,
         recommended_memory_gb=16,
         context_tokens=4096,
+        metadata_architecture="qwen3",
+        advertised_context_tokens=32_768,
         license_url="https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
     ),
 }
@@ -286,6 +303,154 @@ def validate_gguf(path: Path) -> None:
         raise ModelError(f"Unsupported GGUF container version {version}; expected version 2 or 3.")
     if tensor_count > 10_000_000 or metadata_count > 10_000_000:
         raise ModelError("GGUF header contains implausible tensor or metadata counts.")
+
+
+_GGUF_SCALAR_FORMATS: dict[int, str] = {
+    0: "<B",
+    1: "<b",
+    2: "<H",
+    3: "<h",
+    4: "<I",
+    5: "<i",
+    6: "<f",
+    7: "<?",
+    10: "<Q",
+    11: "<q",
+    12: "<d",
+}
+_GGUF_METADATA_LIMIT = 100_000
+_GGUF_ARRAY_LIMIT = 1_000_000
+_GGUF_STRING_LIMIT = 1_000_000
+
+
+def _read_exact(handle: BinaryIO, size: int) -> bytes:
+    data = handle.read(size)
+    if len(data) != size:
+        raise ModelError("GGUF metadata is truncated.")
+    return data
+
+
+def _read_u64(handle: BinaryIO) -> int:
+    return int(struct.unpack("<Q", _read_exact(handle, 8))[0])
+
+
+def _read_gguf_string(handle: BinaryIO) -> str:
+    length = _read_u64(handle)
+    if length > _GGUF_STRING_LIMIT:
+        raise ModelError("GGUF metadata contains an oversized string.")
+    try:
+        return _read_exact(handle, length).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ModelError("GGUF metadata contains invalid UTF-8.") from exc
+
+
+def _read_gguf_value(handle: BinaryIO, value_type: int, *, retain: bool = True) -> object | None:
+    scalar = _GGUF_SCALAR_FORMATS.get(value_type)
+    if scalar is not None:
+        value = struct.unpack(scalar, _read_exact(handle, struct.calcsize(scalar)))[0]
+        return value if retain else None
+    if value_type == 8:
+        value = _read_gguf_string(handle)
+        return value if retain else None
+    if value_type == 9:
+        element_type = int(struct.unpack("<I", _read_exact(handle, 4))[0])
+        length = _read_u64(handle)
+        if length > _GGUF_ARRAY_LIMIT:
+            raise ModelError("GGUF metadata contains an oversized array.")
+        for _ in range(length):
+            _read_gguf_value(handle, element_type, retain=False)
+        return None
+    raise ModelError(f"GGUF metadata uses unsupported value type {value_type}.")
+
+
+def read_gguf_metadata(path: Path) -> dict[str, object]:
+    """Read bounded scalar GGUF metadata without loading tensors or executing model code."""
+
+    validate_gguf(path)
+    with path.open("rb") as handle:
+        header = _read_exact(handle, 24)
+        metadata_count = int(struct.unpack("<Q", header[16:24])[0])
+        if metadata_count > _GGUF_METADATA_LIMIT:
+            raise ModelError("GGUF contains too many metadata entries.")
+        values: dict[str, object] = {}
+        for _ in range(metadata_count):
+            key = _read_gguf_string(handle)
+            value_type = int(struct.unpack("<I", _read_exact(handle, 4))[0])
+            value = _read_gguf_value(handle, value_type)
+            if value is not None:
+                values[key] = value
+    return values
+
+
+def model_metadata_fields(metadata: dict[str, object]) -> dict[str, object]:
+    """Normalize architecture-dependent GGUF keys into the persisted model profile."""
+
+    architecture = metadata.get("general.architecture")
+    if not isinstance(architecture, str) or not architecture:
+        return {}
+
+    def integer(suffix: str) -> int | None:
+        value = metadata.get(f"{architecture}.{suffix}")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        parsed = int(value)
+        return parsed if parsed > 0 and math.isfinite(float(value)) else None
+
+    return {
+        "metadata_architecture": architecture,
+        "advertised_context_tokens": integer("context_length"),
+        "embedding_length": integer("embedding_length"),
+        "block_count": integer("block_count"),
+        "attention_head_count": integer("attention.head_count"),
+        "attention_head_count_kv": integer("attention.head_count_kv"),
+        "attention_key_length": integer("attention.key_length"),
+        "attention_value_length": integer("attention.value_length"),
+    }
+
+
+def enrich_model_from_local_gguf(model: ModelSpec, model_dir: Path) -> ModelSpec:
+    """Fill legacy registry metadata from an installed GGUF without changing the registry."""
+
+    if model.metadata_architecture and model.advertised_context_tokens is not None:
+        return model
+    path = ModelManager(model_dir).path_for(model)
+    if not path.is_file():
+        return model
+    fields = model_metadata_fields(read_gguf_metadata(path))
+    if not fields:
+        return model
+    architecture = fields.get("metadata_architecture")
+    advertised = fields.get("advertised_context_tokens")
+
+    def integer(field: str, current: int | None) -> int | None:
+        value = fields.get(field)
+        return value if current is None and isinstance(value, int) else current
+
+    context_tokens = model.context_tokens
+    if (
+        model.is_user_import
+        and model.advertised_context_tokens is None
+        and isinstance(advertised, int)
+    ):
+        context_tokens = min(8192, advertised)
+    return replace(
+        model,
+        context_tokens=context_tokens,
+        metadata_architecture=(
+            architecture
+            if not model.metadata_architecture and isinstance(architecture, str)
+            else model.metadata_architecture
+        ),
+        advertised_context_tokens=integer(
+            "advertised_context_tokens", model.advertised_context_tokens
+        ),
+        embedding_length=integer("embedding_length", model.embedding_length),
+        block_count=integer("block_count", model.block_count),
+        attention_head_count=integer("attention_head_count", model.attention_head_count),
+        attention_head_count_kv=integer("attention_head_count_kv", model.attention_head_count_kv),
+        attention_key_length=integer("attention_key_length", model.attention_key_length),
+        attention_value_length=integer("attention_value_length", model.attention_value_length),
+    )
 
 
 class ModelManager:

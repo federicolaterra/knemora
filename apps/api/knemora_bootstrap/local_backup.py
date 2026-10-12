@@ -191,11 +191,18 @@ def _write_tree(
 
 
 def _portable_model_configuration(paths: AppPaths) -> tuple[dict[str, Any] | None, bytes | None]:
+    def without_local_paths(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: without_local_paths(item) for key, item in value.items() if key != "path"}
+        if isinstance(value, list):
+            return [without_local_paths(item) for item in value]
+        return value
+
     selection: dict[str, Any] | None = None
     try:
         raw_selection = json.loads((paths.config / "model.json").read_text(encoding="utf-8"))
         if isinstance(raw_selection, dict):
-            selection = {key: value for key, value in raw_selection.items() if key != "path"}
+            selection = without_local_paths(raw_selection)
     except (OSError, ValueError):
         pass
 

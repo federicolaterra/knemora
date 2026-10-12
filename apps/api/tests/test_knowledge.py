@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, func, select
@@ -19,10 +20,12 @@ from app.db.base import Base
 from app.db.models import KnowledgeCompilationJob, SourceRecord, WikiChange
 from app.ingestion.service import IngestionService
 from app.knowledge.compiler import SYSTEM_PROMPT, KnowledgeCompiler
+from app.knowledge.errors import InvalidKnowledgeProposalError
 from app.knowledge.store import WikiStore
 from app.knowledge.types import (
     ClaimClassification,
     ClaimStatus,
+    KnowledgeProposal,
     PageKind,
     ProvenanceRef,
     WikiClaim,
@@ -491,6 +494,11 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
                 "project-aurora.md",
                 b"Project Aurora releases on Friday at 14:00 UTC.",
             )
+            wiki_before_rejection = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
             uploaded = await client.post(
                 "/api/v1/documents",
                 files={
@@ -505,6 +513,11 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
             version_id = uploaded.json()["document_version_id"]
             rejected = await client.post(f"/api/v1/document-versions/{version_id}/compile")
             aurora_after_rejection = await client.get("/api/v1/wiki/pages/Project%20Aurora")
+            wiki_after_rejection = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
             retried = await client.post(f"/api/v1/document-versions/{version_id}/compile")
             local_graph = await client.get(
                 "/api/v1/wiki/graph",
@@ -523,6 +536,7 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
         assert {claim["text"] for claim in aurora_after_rejection.json()["claims"]} == {
             "Project Aurora releases on Friday at 14:00 UTC."
         }
+        assert wiki_after_rejection == wiki_before_rejection
 
         request_payload = json.loads(
             provider.requests[1].messages[1].content.removeprefix("UNTRUSTED_SOURCE_JSON\n")
@@ -567,6 +581,11 @@ def test_reprocess_preserves_source_record_identity_and_forces_a_new_compilation
             first = await client.post(f"/api/v1/document-versions/{version_id}/compile")
             assert first.status_code == 200, first.text
             assert first.json()["status"] == "COMPLETED"
+            wiki_before_reprocess = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
 
             with Session(app.state.engine) as session:
                 before_ids = tuple(
@@ -606,6 +625,12 @@ def test_reprocess_preserves_source_record_identity_and_forces_a_new_compilation
             assert compilation is not None
             assert compilation.status == "COMPLETED"
         assert after_ids == before_ids
+        wiki_after_reprocess = {
+            path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+            for path in app.state.settings.knowledge_path.rglob("*")
+            if path.is_file()
+        }
+        assert wiki_after_reprocess == wiki_before_reprocess
 
     asyncio.run(exercise())
 
@@ -799,6 +824,21 @@ def fake_page(title: str, kind: PageKind = PageKind.CONCEPT) -> WikiPage:
             ),
         ),
     )
+
+
+def test_existing_page_authorization_is_bound_to_each_cited_record() -> None:
+    existing = fake_page("Project Aurora")
+    proposal = KnowledgeProposal.model_validate(project_aurora_proposal())
+
+    with pytest.raises(InvalidKnowledgeProposalError, match="Project Aurora"):
+        KnowledgeCompiler._validate_existing_page_grounding(
+            proposal,
+            record_tokens={
+                1: ("unrelated", "garden", "schedule"),
+                2: ("project", "aurora", "appears", "only", "here"),
+            },
+            existing_pages=(existing,),
+        )
 
 
 def test_typed_wiki_operations_and_lint_detect_broken_links_and_orphans(
