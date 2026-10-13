@@ -63,6 +63,9 @@ class JsonFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
+        fields = getattr(record, "knemora_fields", None)
+        if isinstance(fields, dict):
+            payload["fields"] = fields
         return json.dumps(payload, ensure_ascii=False)
 
 

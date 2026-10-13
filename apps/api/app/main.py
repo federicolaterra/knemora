@@ -54,6 +54,8 @@ from app.llm.errors import (
     LLMContextOverflowError,
     LLMProviderError,
     LLMResponseTruncatedError,
+    LLMTimeoutError,
+    LLMTransportError,
 )
 from app.observability import RequestMetricsMiddleware, configure_logging, request_id_context
 from app.operations import create_operations_router
@@ -377,6 +379,22 @@ def create_app(
                 title="Local model answer was truncated",
                 detail=str(exc),
                 error_type="urn:knemora:error:llm-response-truncated",
+            )
+        if isinstance(exc, LLMTimeoutError):
+            return _problem(
+                request,
+                http_status=status.HTTP_504_GATEWAY_TIMEOUT,
+                title="Local model request timed out",
+                detail="The local model exceeded the bounded request deadline. Retry the request.",
+                error_type="urn:knemora:error:llm-timeout",
+            )
+        if isinstance(exc, LLMTransportError):
+            return _problem(
+                request,
+                http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                title="Local model connection failed",
+                detail="The application lost its connection to the local model runtime.",
+                error_type="urn:knemora:error:llm-transport",
             )
         return _problem(
             request,

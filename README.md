@@ -254,7 +254,15 @@ memory budget, then use the supported 4,096-token fallback only if it is safe. T
 reduced context may truncate broad or multi-step answers sooner. Explicit CLI, persisted, or
 environment context requests remain authoritative and are never silently lowered.
 
-`./knemora model info <id>` shows provenance and local status. Removal is deliberately two-stage:
+Inspect the default model's configured preference, automatic/explicit mode, last effective context,
+and current memory assessment with:
+
+```bash
+./knemora model info qwen3-8b-q3-k-m
+```
+
+The **last effective context** is the context used by the last admitted start; automatic selection
+can change at the next start as available memory changes. Removal is deliberately two-stage:
 
 ```bash
 ./knemora model remove <id>

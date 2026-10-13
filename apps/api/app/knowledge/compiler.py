@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 import time
 import uuid
@@ -50,6 +52,13 @@ from app.knowledge.types import (
     WikiRelationship,
 )
 from app.llm import ChatMessage, ChatRequest, ChatResponse, LLMProvider
+from app.llm.errors import (
+    LLMProviderError,
+    LLMResponseError,
+    LLMTimeoutError,
+    LLMTransportError,
+    LLMUnavailableError,
+)
 
 COMPILATION_NAMESPACE = uuid.UUID("60dce31e-56dc-5ce3-a987-7234d83de00d")
 SYSTEM_PROMPT = """
@@ -76,6 +85,7 @@ Do not output chain-of-thought, scratch work, or hidden reasoning.
 
 STRUCTURED_OUTPUT_CONTEXT_RESERVE = 256
 WORD_TOKEN = re.compile(r"\w+", re.UNICODE)
+logger = logging.getLogger(__name__)
 
 
 def _unique_provenance(values: Sequence[ProvenanceRef]) -> tuple[ProvenanceRef, ...]:
@@ -238,43 +248,86 @@ class KnowledgeCompiler:
                 )
                 self.session.commit()
                 return job
+        except asyncio.CancelledError as exc:
+            self.session.rollback()
+            self._record_failure(
+                job=job,
+                document=document,
+                version=version,
+                owner_id=owner_id,
+                started=started,
+                exc=exc,
+            )
+            raise
         except Exception as exc:
             self.session.rollback()
-            persisted = self.session.get(KnowledgeCompilationJob, job.id)
-            if persisted is None:
-                raise
-            lint = self.store.lint()
-            error = self._safe_error(exc)
-            persisted.status = CompilationStatus.FAILED
-            persisted.error = error
-            persisted.finished_at = datetime.now(UTC)
-            if isinstance(exc, InvalidKnowledgeProposalError):
-                persisted.proposal = None
-                persisted.last_completed_stage = None
-            persisted.report = CompilationReport(
-                compilation_job_id=str(persisted.id),
-                source=self._report_source(document, version),
-                pages_created=(),
-                pages_updated=(),
-                links_created=0,
-                conflicts=(),
-                warnings=(),
-                provenance_coverage=0,
-                duration_ms=int((time.monotonic() - started) * 1000),
-                failures=(error,),
-                lint=lint,
-            ).model_dump(mode="json")
-            self.session.add(
-                AuditEvent(
-                    actor_user_id=owner_id,
-                    event_type="knowledge.compilation.failed",
-                    entity_type="knowledge_compilation_job",
-                    entity_id=str(persisted.id),
-                    payload={"document_version_id": str(version.id), "error": error},
-                )
+            return self._record_failure(
+                job=job,
+                document=document,
+                version=version,
+                owner_id=owner_id,
+                started=started,
+                exc=exc,
             )
-            self.session.commit()
-            return persisted
+
+    def _record_failure(
+        self,
+        *,
+        job: KnowledgeCompilationJob,
+        document: Document,
+        version: DocumentVersion,
+        owner_id: uuid.UUID,
+        started: float,
+        exc: BaseException,
+    ) -> KnowledgeCompilationJob:
+        persisted = self.session.get(KnowledgeCompilationJob, job.id)
+        if persisted is None:
+            raise RuntimeError("Knowledge compilation job disappeared while recording failure.")
+        lint = self.store.lint()
+        error = self._safe_error(exc)
+        duration_ms = int((time.monotonic() - started) * 1000)
+        persisted.status = CompilationStatus.FAILED
+        persisted.error = error
+        persisted.finished_at = datetime.now(UTC)
+        if isinstance(exc, (asyncio.CancelledError, InvalidKnowledgeProposalError)):
+            persisted.proposal = None
+            persisted.last_completed_stage = None
+        persisted.report = CompilationReport(
+            compilation_job_id=str(persisted.id),
+            source=self._report_source(document, version),
+            pages_created=(),
+            pages_updated=(),
+            links_created=0,
+            conflicts=(),
+            warnings=(),
+            provenance_coverage=0,
+            duration_ms=duration_ms,
+            failures=(error,),
+            lint=lint,
+        ).model_dump(mode="json")
+        self.session.add(
+            AuditEvent(
+                actor_user_id=owner_id,
+                event_type="knowledge.compilation.failed",
+                entity_type="knowledge_compilation_job",
+                entity_id=str(persisted.id),
+                payload={"document_version_id": str(version.id), "error": error},
+            )
+        )
+        self.session.commit()
+        logger.warning(
+            "knowledge_compilation_failed",
+            extra={
+                "knemora_fields": {
+                    "job_id": str(persisted.id),
+                    "document_version_id": str(version.id),
+                    "error_type": type(exc).__name__,
+                    "duration_ms": duration_ms,
+                    "last_completed_stage": persisted.last_completed_stage,
+                }
+            },
+        )
+        return persisted
 
     def _require_source_active(self, owner_id: uuid.UUID, version_id: uuid.UUID) -> None:
         active = self.session.scalar(
@@ -353,7 +406,8 @@ class KnowledgeCompiler:
             select(DatasetRecord).where(DatasetRecord.document_version_id == version.id)
         )
         existing_pages = [page for _, page in self.store.page_snapshot()]
-        for batch in self._record_batches(records):
+        batches = self._record_batches(records)
+        for batch_index, batch in enumerate(batches, start=1):
             payload = {
                 "source_identity": {
                     "document_id": str(document.id),
@@ -385,12 +439,42 @@ class KnowledgeCompiler:
                 ),
                 temperature=0,
                 max_tokens=self.settings.knowledge_compilation_max_output_tokens,
+                timeout_seconds=self.settings.knowledge_compilation_timeout_seconds,
                 response_schema=KnowledgeProposal.model_json_schema(),
+            )
+            logger.info(
+                "knowledge_compilation_model_request",
+                extra={
+                    "knemora_fields": {
+                        "document_version_id": str(version.id),
+                        "batch": batch_index,
+                        "batch_count": len(batches),
+                        "source_record_count": len(batch),
+                        "source_character_count": sum(len(content) for _, content in batch),
+                        "max_tokens": request.max_tokens,
+                        "timeout_seconds": request.timeout_seconds,
+                        "retry": 0,
+                    }
+                },
             )
             response = await self.provider.chat(request)
             if response.finish_reason == "length":
                 retry_limit = self._structured_output_retry_limit(request, response)
                 if retry_limit > request.max_tokens:
+                    logger.info(
+                        "knowledge_compilation_model_retry",
+                        extra={
+                            "knemora_fields": {
+                                "document_version_id": str(version.id),
+                                "batch": batch_index,
+                                "batch_count": len(batches),
+                                "retry_cause": "length",
+                                "previous_max_tokens": request.max_tokens,
+                                "retry_max_tokens": retry_limit,
+                                "timeout_seconds": request.timeout_seconds,
+                            }
+                        },
+                    )
                     response = await self.provider.chat(
                         request.model_copy(update={"max_tokens": retry_limit})
                     )
@@ -983,7 +1067,12 @@ class KnowledgeCompiler:
         )
 
     @staticmethod
-    def _safe_error(exc: Exception) -> str:
+    def _safe_error(exc: BaseException) -> str:
+        if isinstance(exc, asyncio.CancelledError):
+            return (
+                "Knowledge compilation was cancelled while waiting for the local model. "
+                "No knowledge changes were applied; retry compilation when ready."
+            )
         if isinstance(
             exc,
             (
@@ -993,4 +1082,22 @@ class KnowledgeCompiler:
             ),
         ):
             return str(exc)[:2000]
+        if isinstance(exc, LLMTimeoutError):
+            return (
+                "Knowledge compilation timed out while waiting for the local model. "
+                "No knowledge changes were applied; retry compilation when the model is ready."
+            )
+        if isinstance(exc, LLMTransportError):
+            return (
+                "Knowledge compilation lost its connection to the local model. "
+                "No knowledge changes were applied; verify the model runtime and retry."
+            )
+        if isinstance(exc, LLMResponseError):
+            return (
+                "Knowledge compilation failed because the local model returned an invalid response."
+            )
+        if isinstance(exc, LLMUnavailableError):
+            return "Knowledge compilation could not be completed by the local model runtime."
+        if isinstance(exc, LLMProviderError):
+            return f"Knowledge compilation failed: {type(exc).__name__}."
         return f"Knowledge compilation failed: {type(exc).__name__}."

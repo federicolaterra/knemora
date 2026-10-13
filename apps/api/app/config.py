@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     knowledge_compilation_max_output_tokens: int = _setting(
         2_048, "KNOWLEDGE_COMPILATION_MAX_OUTPUT_TOKENS", ge=1
     )
+    knowledge_compilation_timeout_seconds: float = _setting(
+        300.0, "KNOWLEDGE_COMPILATION_TIMEOUT_SECONDS", gt=0
+    )
     knowledge_compilation_batch_chars: int = _setting(
         12_000, "KNOWLEDGE_COMPILATION_BATCH_CHARS", ge=1_000
     )

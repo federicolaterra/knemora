@@ -1,6 +1,8 @@
+import asyncio
 import json
 
 import httpx
+import pytest
 
 from app.llm import (
     ChatMessage,
@@ -8,6 +10,7 @@ from app.llm import (
     ChatToolDefinition,
     LocalLlamaCppProvider,
 )
+from app.llm.errors import LLMTimeoutError, LLMTransportError
 
 
 def test_local_provider_health_and_chat_contract() -> None:
@@ -18,6 +21,10 @@ def test_local_provider_health_and_chat_contract() -> None:
         assert payload["model"] == "configured-model"
         assert payload["messages"] == [{"role": "user", "content": "Hello"}]
         assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+        assert request.extensions["timeout"]["read"] == 300.0
+        assert request.extensions["timeout"]["connect"] == 120.0
+        assert request.extensions["timeout"]["write"] == 120.0
+        assert request.extensions["timeout"]["pool"] == 120.0
         return httpx.Response(
             200,
             json={
@@ -36,7 +43,9 @@ def test_local_provider_health_and_chat_contract() -> None:
             )
             health = await provider.health()
             response = await provider.chat(
-                ChatRequest(messages=(ChatMessage(role="user", content="Hello"),))
+                ChatRequest(
+                    messages=(ChatMessage(role="user", content="Hello"),), timeout_seconds=300
+                )
             )
         assert health.healthy is True
         assert response.message.content == "Hi"
@@ -45,6 +54,55 @@ def test_local_provider_health_and_chat_contract() -> None:
     import asyncio
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "expected_error"),
+    [
+        (httpx.ReadTimeout("generation exceeded deadline"), LLMTimeoutError),
+        (httpx.ConnectError("runtime connection failed"), LLMTransportError),
+    ],
+)
+async def test_local_provider_types_timeout_and_transport_failures(
+    provider_error: httpx.HTTPError, expected_error: type[Exception]
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        provider_error.request = request
+        raise provider_error
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = LocalLlamaCppProvider(
+            base_url="http://llama.test", model="configured-model", client=client
+        )
+        with pytest.raises(expected_error) as raised:
+            await provider.chat(
+                ChatRequest(
+                    messages=(ChatMessage(role="user", content="Hello"),), timeout_seconds=300
+                )
+            )
+        if expected_error is LLMTimeoutError:
+            assert str(raised.value) == "llama.cpp read exceeded its 300-second deadline"
+
+
+async def test_local_provider_preserves_caller_cancellation() -> None:
+    started = asyncio.Event()
+
+    async def handler(_: httpx.Request) -> httpx.Response:
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("The cancelled request unexpectedly resumed.")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = LocalLlamaCppProvider(
+            base_url="http://llama.test", model="configured-model", client=client
+        )
+        task = asyncio.create_task(
+            provider.chat(ChatRequest(messages=(ChatMessage(role="user", content="Hello"),)))
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 async def test_local_provider_stream_contract() -> None:

@@ -85,10 +85,18 @@ fallback only when that fallback passes the same safety checks. The reduced cont
 operation but gives broad or multi-step answers less working context and can cause earlier
 truncation. It is not an equivalent-quality mode.
 
-Inspect the configured preference, whether it is automatic or explicit, the last effective context,
-and the last time-dependent memory assessment with `./knemora model info MODEL_ID`. That assessment
-does not guarantee that a later start will be admitted. An operator can set a validated per-model
-override with:
+Inspect the default model's configured preference, whether it is automatic or explicit, the last
+effective context, and the last time-dependent memory assessment with:
+
+```bash
+./knemora model info qwen3-8b-q3-k-m
+```
+
+For another selected model, replace the ID. The **last effective context** is the context used by
+the last admitted start; it is the value to check when determining whether Qwen ran with 8,192 or
+the 4,096-token fallback. The assessment does not guarantee that a later start will be admitted,
+because automatic selection is recalculated from current available memory. An operator can set a
+validated per-model override with:
 
 ```bash
 ./knemora setup --model MODEL_ID --context-tokens 8192
@@ -100,6 +108,19 @@ override for manual installations. Precedence is the setup flag, a persisted per
 the environment override, the curated/GGUF-derived profile, and finally a conservative fallback.
 Explicit invalid or unsafe values fail without changing the active model. A runtime allocation
 failure restores the prior selection; it never initiates Wiki compilation or reprocessing.
+
+Knowledge compilation has a separate bounded response-read timeout because its structured output
+may use up to 2,048 tokens and one context-safe retry. The default is 300 seconds per attempt. On a
+slower but otherwise healthy local model, an operator may increase it in the repository `.env`, for
+example:
+
+```dotenv
+KNEMORA_KNOWLEDGE_COMPILATION_TIMEOUT_SECONDS=500
+```
+
+Restart Knemora after editing `.env`. Keep 300 unless logs show a healthy compilation request is
+reaching that deadline: a larger value waits longer for the same bounded token budget and does not
+increase model context, add retries, repair invalid JSON, or prevent token-limit truncation.
 
 Imported metadata persists in `~/.knemora/config/models.json`, while managed weights live under
 `~/.knemora/models`. Custom entries are unverified by Knemora even after their checksum and GGUF

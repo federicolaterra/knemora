@@ -844,6 +844,7 @@ def test_configuration_preserves_existing_values_and_fills_missing_defaults(
     assert "replace-with-a-unique-local-password" not in values
     assert f"KNEMORA_DATABASE_URL=sqlite+pysqlite:///{paths.database}" in values
     assert "KNEMORA_KNOWLEDGE_COMPILATION_MAX_OUTPUT_TOKENS=2048" in values
+    assert "KNEMORA_KNOWLEDGE_COMPILATION_TIMEOUT_SECONDS=300" in values
     assert "POSTGRES_" not in values
 
 

@@ -13,7 +13,12 @@ from app.llm.contracts import (
     LLMHealth,
     LLMProvider,
 )
-from app.llm.errors import LLMContextOverflowError, LLMResponseTruncatedError
+from app.llm.errors import (
+    LLMContextOverflowError,
+    LLMResponseTruncatedError,
+    LLMTimeoutError,
+    LLMTransportError,
+)
 from app.llm.local_llama_cpp import LocalLlamaCppProvider
 
 __all__ = [
@@ -31,4 +36,6 @@ __all__ = [
     "LocalLlamaCppProvider",
     "LLMContextOverflowError",
     "LLMResponseTruncatedError",
+    "LLMTimeoutError",
+    "LLMTransportError",
 ]

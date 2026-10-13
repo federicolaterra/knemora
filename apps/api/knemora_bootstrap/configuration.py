@@ -178,6 +178,7 @@ def ensure_repository_env(paths: AppPaths) -> Path:
         "KNEMORA_SOURCE_STORE_PATH": str(paths.sources),
         "KNEMORA_KNOWLEDGE_PATH": str(paths.wiki),
         "KNEMORA_KNOWLEDGE_COMPILATION_MAX_OUTPUT_TOKENS": "2048",
+        "KNEMORA_KNOWLEDGE_COMPILATION_TIMEOUT_SECONDS": "300",
     }
     missing = [(key, value) for key, value in defaults.items() if key not in existing]
     if not missing:
