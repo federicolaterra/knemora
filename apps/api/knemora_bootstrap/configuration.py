@@ -9,8 +9,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from knemora_bootstrap.model_context import ContextPlan
+from knemora_bootstrap.model_context import ContextPlan, ModelContextError
 from knemora_bootstrap.models import ModelSpec
+
+MANAGED_EFFECTIVE_CONTEXT_ORIGIN = "managed-effective"
+
+
+@dataclass(frozen=True)
+class ContextPreference:
+    tokens: int
+    source: str
+    explicit: bool
 
 
 @dataclass(frozen=True)
@@ -222,7 +231,11 @@ def write_model_selection(
             existing.get("context_tokens") != plan.effective_context_tokens,
         )
     )
-    if existing.get("model_id") and selection_changed:
+    if (
+        existing.get("model_id")
+        and selection_changed
+        and not (isinstance(previous, dict) and previous)
+    ):
         previous = {
             key: value
             for key, value in existing.items()
@@ -237,6 +250,7 @@ def write_model_selection(
         "context_tokens": plan.effective_context_tokens,
         "advertised_context_tokens": plan.advertised_context_tokens,
         "configured_context_tokens": plan.configured_context_tokens,
+        "context_mode": "explicit" if plan.explicit else "automatic",
         "context_source": plan.source,
         "context_reason": plan.reason,
         "estimated_memory_bytes": plan.memory.total_bytes,
@@ -262,6 +276,55 @@ def context_override_for(paths: AppPaths, model_id: str) -> int | None:
         return None
     value = overrides.get(model_id)
     return value if isinstance(value, int) else None
+
+
+def resolve_context_preference(
+    paths: AppPaths,
+    model: ModelSpec,
+    *,
+    cli_context_tokens: int | None = None,
+) -> ContextPreference:
+    """Resolve user intent without mistaking a managed effective value for an override."""
+
+    if cli_context_tokens is not None:
+        return ContextPreference(
+            cli_context_tokens,
+            "explicit setup --context-tokens override",
+            True,
+        )
+
+    persisted_context = context_override_for(paths, model.id)
+    if persisted_context is not None:
+        return ContextPreference(
+            persisted_context,
+            "persisted per-model user override",
+            True,
+        )
+
+    repository_environment = read_env(paths.repository / ".env")
+    raw_environment_context = repository_environment.get("KNEMORA_LLM_CONTEXT_TOKENS")
+    if raw_environment_context is None and (
+        os.environ.get("KNEMORA_LLM_CONTEXT_ORIGIN") != MANAGED_EFFECTIVE_CONTEXT_ORIGIN
+    ):
+        raw_environment_context = os.environ.get("KNEMORA_LLM_CONTEXT_TOKENS")
+    if raw_environment_context is not None:
+        try:
+            environment_context = int(raw_environment_context)
+        except ValueError as exc:
+            raise ModelContextError(
+                "KNEMORA_LLM_CONTEXT_TOKENS must be a whole number of tokens."
+            ) from exc
+        return ContextPreference(
+            environment_context,
+            "KNEMORA_LLM_CONTEXT_TOKENS environment override",
+            True,
+        )
+
+    return ContextPreference(
+        model.context_tokens,
+        "curated model profile" if not model.is_user_import else "GGUF-derived safe profile",
+        False,
+    )
 
 
 def rollback_model_selection(paths: AppPaths) -> bool:
@@ -326,6 +389,7 @@ def runtime_environment(
                 "KNEMORA_LLM_MODEL": str(model["model_id"]),
                 "KNEMORA_LLM_QUANTIZATION": str(model["quantization"]),
                 "KNEMORA_LLM_CONTEXT_TOKENS": str(model["context_tokens"]),
+                "KNEMORA_LLM_CONTEXT_ORIGIN": MANAGED_EFFECTIVE_CONTEXT_ORIGIN,
                 "KNEMORA_LLM_CONTEXT_SOURCE": str(model.get("context_source", "legacy selection")),
             }
         )

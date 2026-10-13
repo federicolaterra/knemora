@@ -79,8 +79,16 @@ explicit and resolves one artifact; it never causes repository code to execute:
 
 Knemora reads trustworthy GGUF architecture/context metadata, combines it with the selected model
 profile and current safe host-memory budget, and records the effective context plus its rationale in
-`KNEMORA_HOME/config/model.json`. Inspect it with `./knemora model info MODEL_ID`. An operator can
-set a validated per-model override with:
+`KNEMORA_HOME/config/model.json`. Setup and every start reassess automatic profiles against current
+memory: the default Qwen profile tries 8,192 tokens first and may use the supported 4,096-token
+fallback only when that fallback passes the same safety checks. The reduced context preserves safe
+operation but gives broad or multi-step answers less working context and can cause earlier
+truncation. It is not an equivalent-quality mode.
+
+Inspect the configured preference, whether it is automatic or explicit, the last effective context,
+and the last time-dependent memory assessment with `./knemora model info MODEL_ID`. That assessment
+does not guarantee that a later start will be admitted. An operator can set a validated per-model
+override with:
 
 ```bash
 ./knemora setup --model MODEL_ID --context-tokens 8192

@@ -16,10 +16,16 @@ from urllib.parse import unquote
 from knemora_bootstrap.configuration import (
     AppPaths,
     confirm_model_selection,
+    resolve_context_preference,
     rollback_model_selection,
     runtime_environment,
+    write_model_selection,
 )
-from knemora_bootstrap.model_context import ModelContextError, plan_context
+from knemora_bootstrap.model_context import (
+    ModelContextError,
+    describe_context_admission,
+    plan_context,
+)
 from knemora_bootstrap.models import ModelRegistry, enrich_model_from_local_gguf
 from knemora_bootstrap.native_runtime import NativeRuntimeError, NativeRuntimeManager
 from knemora_bootstrap.platforms import PlatformAdapter
@@ -81,23 +87,35 @@ class RuntimeManager:
                 str(selection_payload["model_id"])
             )
             selected_model = enrich_model_from_local_gguf(selected_model, self.paths.models)
-            selected_context = int(selection_payload["context_tokens"])
+            selected_model_path = Path(str(selection_payload["path"]))
+            preference = resolve_context_preference(self.paths, selected_model)
             startup_plan = plan_context(
                 selected_model,
                 self.platform.hardware(),
-                configured_context_tokens=selected_context,
-                source=str(selection_payload.get("context_source", "persisted model selection")),
-                explicit=True,
+                configured_context_tokens=preference.tokens,
+                source=preference.source,
+                explicit=preference.explicit,
             )
         except (OSError, ValueError, KeyError, TypeError, ModelContextError, RuntimeError) as exc:
             rolled_back = rollback_model_selection(self.paths)
             suffix = " The prior model selection was restored." if rolled_back else ""
-            raise RuntimeFailure(f"Model startup preflight failed: {exc}.{suffix}") from exc
-        print(
-            f"Starting {selected_model.display_name} with "
-            f"{startup_plan.effective_context_tokens:,} effective context tokens; "
-            f"{startup_plan.reason}."
-        )
+            detail = str(exc).rstrip(".")
+            raise RuntimeFailure(f"Model startup preflight failed: {detail}.{suffix}") from exc
+        print(f"Starting {selected_model.display_name}. {describe_context_admission(startup_plan)}")
+        try:
+            write_model_selection(
+                self.paths,
+                selected_model,
+                selected_model_path,
+                plan=startup_plan,
+            )
+        except OSError as exc:
+            rolled_back = rollback_model_selection(self.paths)
+            suffix = " The prior model selection was restored." if rolled_back else ""
+            detail = str(exc).rstrip(".")
+            raise RuntimeFailure(
+                f"Could not record the startup context plan: {detail}.{suffix}"
+            ) from exc
         env = runtime_environment(
             self.paths,
             demo=demo,

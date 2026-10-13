@@ -35,8 +35,29 @@ class ContextPlan:
     configured_context_tokens: int
     effective_context_tokens: int
     source: str
+    explicit: bool
     reason: str
     memory: MemoryEstimate
+
+
+def describe_context_admission(plan: ContextPlan) -> str:
+    """Return a concise operator-facing description of the selected context mode."""
+
+    if plan.explicit:
+        return (
+            f"Explicit-context admission: {plan.effective_context_tokens:,} requested tokens "
+            f"from {plan.source}."
+        )
+    if plan.effective_context_tokens < plan.configured_context_tokens:
+        return (
+            f"Automatic reduced-context admission: {plan.effective_context_tokens:,} effective "
+            f"tokens instead of the {plan.configured_context_tokens:,}-token profile. Broad or "
+            "multi-step answers have less context and may truncate sooner."
+        )
+    return (
+        f"Automatic full-context admission: {plan.effective_context_tokens:,} tokens from "
+        f"{plan.source}."
+    )
 
 
 def _kv_bytes(model: ModelSpec, context_tokens: int) -> tuple[int, str]:
@@ -159,6 +180,7 @@ def plan_context(
                 configured_context_tokens=configured_context_tokens,
                 effective_context_tokens=candidate,
                 source=source,
+                explicit=explicit,
                 reason=reason,
                 memory=estimate,
             )
@@ -170,11 +192,26 @@ def plan_context(
         if budget is not None
         else f"estimated {required / GIB:.2f} GiB required"
     )
-    qualifier = "Explicit context cannot be reduced automatically. " if explicit else ""
+    if explicit and configured_context_tokens > MIN_AGENT_CONTEXT_TOKENS:
+        action = (
+            "The explicit request will not be lowered automatically. Retry with a validated "
+            f"smaller explicit context (minimum {MIN_AGENT_CONTEXT_TOKENS:,} tokens), select a "
+            "smaller model, or retry when the safe memory budget is larger."
+        )
+    elif explicit:
+        action = (
+            f"The explicit request is already at Knemora's {MIN_AGENT_CONTEXT_TOKENS:,}-token "
+            "minimum and will not be lowered. Select a smaller model or retry when the safe "
+            "memory budget is larger."
+        )
+    else:
+        action = (
+            "The automatic profile was also unsafe at Knemora's "
+            f"{MIN_AGENT_CONTEXT_TOKENS:,}-token minimum. Select a smaller model or retry when "
+            "the safe memory budget is larger."
+        )
     raise ModelContextError(
-        f"{model.display_name} cannot start safely at a usable context: {detail}. "
-        f"{qualifier}Stop other memory-intensive applications, select a smaller model, or choose a "
-        f"validated context of at least {MIN_AGENT_CONTEXT_TOKENS:,} tokens."
+        f"{model.display_name} cannot start safely at a usable context: {detail}. {action}"
     )
 
 
@@ -183,6 +220,7 @@ __all__ = [
     "MemoryEstimate",
     "MIN_AGENT_CONTEXT_TOKENS",
     "ModelContextError",
+    "describe_context_admission",
     "estimate_memory",
     "plan_context",
 ]

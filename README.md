@@ -249,6 +249,11 @@ as Knemora-tested, and are not selected automatically. They remain subject to th
 licenses; Knemora's MIT License does not relicense model weights. For automation, place the global
 flags before the command: `./knemora --non-interactive --yes load --model hf:...`.
 
+For automatic profiles, setup and each start assess the full model context against the current safe
+memory budget, then use the supported 4,096-token fallback only if it is safe. The CLI reports that
+reduced context may truncate broad or multi-step answers sooner. Explicit CLI, persisted, or
+environment context requests remain authoritative and are never silently lowered.
+
 `./knemora model info <id>` shows provenance and local status. Removal is deliberately two-stage:
 
 ```bash

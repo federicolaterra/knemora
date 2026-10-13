@@ -15,6 +15,10 @@ and established interfaces.
 
 ### Fixed
 
+- Automatic model profiles are re-evaluated at every start and can safely fall back from the full
+  8,192-token Qwen profile to 4,096 tokens without being mistaken for explicit user overrides.
+- Context diagnostics now distinguish automatic full/reduced admission from explicit rejection,
+  describe reduced-context quality limits, and label memory assessments as time-dependent.
 - Failed model startup now restores the prior selection without initiating knowledge work.
 - Intentional compilation now requires each existing-page proposal to be grounded in every cited
   source record and skips byte-identical Wiki writes, index rebuilds, and manifest rewrites.

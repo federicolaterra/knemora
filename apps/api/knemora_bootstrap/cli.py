@@ -16,11 +16,10 @@ from app.home import HomeCompatibilityService
 from knemora_bootstrap.adk_web import launch_adk_web
 from knemora_bootstrap.configuration import (
     AppPaths,
-    context_override_for,
     ensure_repository_env,
     mark_setup_complete,
     read_backup_path,
-    read_env,
+    resolve_context_preference,
     rollback_model_selection,
     runtime_environment,
     setup_is_complete,
@@ -29,7 +28,7 @@ from knemora_bootstrap.configuration import (
     write_model_selection,
 )
 from knemora_bootstrap.development_preset import CANONICAL_PROMPT
-from knemora_bootstrap.model_context import ModelContextError, plan_context
+from knemora_bootstrap.model_context import describe_context_admission, plan_context
 from knemora_bootstrap.model_import import HuggingFaceArtifact, ModelImporter, partial_path_for
 from knemora_bootstrap.models import (
     DEFAULT_MODEL_ID,
@@ -141,43 +140,17 @@ class SetupManager:
                 f"accelerator: {hardware.accelerator}."
             )
         )
-        persisted_context = context_override_for(self.paths, model.id)
-        environment = {**os.environ, **read_env(self.paths.repository / ".env")}
-        raw_environment_context = environment.get("KNEMORA_LLM_CONTEXT_TOKENS")
-        environment_context: int | None = None
-        if raw_environment_context is not None:
-            try:
-                environment_context = int(raw_environment_context)
-            except ValueError as exc:
-                raise ModelContextError(
-                    "KNEMORA_LLM_CONTEXT_TOKENS must be a whole number of tokens."
-                ) from exc
-        if context_tokens is not None:
-            configured_context = context_tokens
-            context_source = "explicit setup --context-tokens override"
-            explicit_context = context_tokens
-        elif persisted_context is not None:
-            configured_context = persisted_context
-            context_source = "persisted per-model user override"
-            explicit_context = persisted_context
-        elif environment_context is not None:
-            configured_context = environment_context
-            context_source = "KNEMORA_LLM_CONTEXT_TOKENS environment override"
-            explicit_context = None
-        else:
-            configured_context = model.context_tokens
-            context_source = (
-                "curated model profile" if not model.is_user_import else "GGUF-derived safe profile"
-            )
-            explicit_context = None
+        preference = resolve_context_preference(
+            self.paths,
+            model,
+            cli_context_tokens=context_tokens,
+        )
         context_plan = plan_context(
             model,
             hardware,
-            configured_context_tokens=configured_context,
-            source=context_source,
-            explicit=context_tokens is not None
-            or persisted_context is not None
-            or environment_context is not None,
+            configured_context_tokens=preference.tokens,
+            source=preference.source,
+            explicit=preference.explicit,
         )
         memory = context_plan.memory
         budget = (
@@ -194,6 +167,7 @@ class SetupManager:
             f"Context preflight: {context_plan.effective_context_tokens:,} effective tokens "
             f"({advertised}; {context_plan.reason})."
         )
+        print(describe_context_admission(context_plan))
         print(
             f"Memory preflight: {memory.total_bytes / 1024**3:.2f} GiB estimated, {budget}; "
             f"uncertainty {memory.uncertainty}."
@@ -216,7 +190,7 @@ class SetupManager:
             model,
             model_path,
             plan=context_plan,
-            explicit_context_tokens=explicit_context,
+            explicit_context_tokens=context_tokens,
         )
         try:
             mark_setup_complete(self.paths, model)
@@ -635,6 +609,7 @@ def _print_models(paths: AppPaths) -> None:
 def _print_model_info(paths: AppPaths, model_id: str) -> None:
     model = ModelRegistry(paths.model_registry).get(model_id)
     model = enrich_model_from_local_gguf(model, paths.models)
+    preference = resolve_context_preference(paths, model)
     manager = ModelManager(paths.models)
     selection: dict[str, object] = {}
     try:
@@ -645,6 +620,20 @@ def _print_model_info(paths: AppPaths, model_id: str) -> None:
         pass
     selected_context = selection.get("context_tokens")
     estimated_memory = selection.get("estimated_memory_bytes")
+    safe_budget = selection.get("safe_memory_budget_bytes")
+    if isinstance(estimated_memory, int):
+        budget_detail = (
+            f" versus {safe_budget / 1024**3:.2f} GiB safe budget"
+            if isinstance(safe_budget, int)
+            else "; safe budget unavailable"
+        )
+        memory_assessment = (
+            f"last preflight: {estimated_memory / 1024**3:.2f} GiB estimated{budget_detail} "
+            f"({selection.get('memory_estimate_uncertainty', 'uncertainty unavailable')}); "
+            "time-dependent and not a launch guarantee"
+        )
+    else:
+        memory_assessment = "not preflighted; launch admission is time-dependent"
     values = (
         ("ID", model.id),
         ("Origin", "user" if model.is_user_import else "Knemora curated"),
@@ -666,21 +655,15 @@ def _print_model_info(paths: AppPaths, model_id: str) -> None:
             ),
         ),
         ("Profile context", f"{model.context_tokens:,} tokens"),
+        ("Configured preference", f"{preference.tokens:,} tokens"),
+        ("Configuration mode", "explicit" if preference.explicit else "automatic"),
         (
-            "Effective context",
+            "Effective context (last preflight)",
             (f"{selected_context:,} tokens" if isinstance(selected_context, int) else "not active"),
         ),
-        ("Context source", str(selection.get("context_source", "not active"))),
-        ("Context rationale", str(selection.get("context_reason", "not active"))),
-        (
-            "Estimated memory",
-            (
-                f"{estimated_memory / 1024**3:.2f} GiB "
-                f"({selection.get('memory_estimate_uncertainty', 'uncertainty unavailable')})"
-                if isinstance(estimated_memory, int)
-                else "not preflighted"
-            ),
-        ),
+        ("Context source", preference.source),
+        ("Last preflight rationale", str(selection.get("context_reason", "not active"))),
+        ("Memory assessment", memory_assessment),
         ("Artifact status", manager.artifact_status(model)),
         ("License reference", model.license_url),
         ("Imported at", model.imported_at or "distributed with Knemora"),
