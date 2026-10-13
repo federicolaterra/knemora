@@ -1003,6 +1003,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Restored:         {', '.join(restore_result.restored_roots)}")
             print(f"Active database:  {restore_result.database}")
             print(f"Recovery archive: {restore_result.recovery_archive}")
+            print(
+                "Credentials:      Restored accounts and password hashes are authoritative; "
+                "sign in with credentials from the backup. The destination setup password "
+                "is no longer authoritative."
+            )
             if restore_result.backup_type == "database":
                 print("Existing Wiki and source files were preserved by explicit request.")
             if restore_result.archived_model_id:

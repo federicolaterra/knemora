@@ -162,6 +162,7 @@ def _excluded_knowledge_path(relative: Path) -> bool:
         relative.name == ".DS_Store"
         or relative.as_posix() == "index.md"
         or parts[:2] == (".knemora", "search-index")
+        or relative.as_posix() == ".knemora/graph-index.json"
         or parts[:2] == (".knemora", "locks")
         or relative.as_posix() == ".knemora/state.json"
     )

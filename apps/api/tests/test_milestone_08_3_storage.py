@@ -171,7 +171,9 @@ def test_postgresql_import_preserves_data_validates_and_is_retry_safe(tmp_path: 
     assert repeated.already_migrated
 
 
-def test_sqlite_backup_api_copies_a_consistent_database(tmp_path: Path) -> None:
+def test_sqlite_backup_api_copies_a_consistent_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source.db"
     destination = tmp_path / "outside-home" / "knemora.db"
     engine = create_database_engine(f"sqlite+pysqlite:///{source}")
@@ -184,8 +186,18 @@ def test_sqlite_backup_api_copies_a_consistent_database(tmp_path: Path) -> None:
                 "VALUES ('core', '0.8.3', 10, 1)"
             )
         )
+    original_replace = Path.replace
+
+    def replace_with_temporary_sidecars(self: Path, target: Path) -> Path:
+        if self.name.endswith(".tmp"):
+            for suffix in ("-wal", "-shm"):
+                self.with_name(self.name + suffix).write_bytes(b"temporary")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace_with_temporary_sidecars)
     backup_sqlite(source, destination)
     with create_database_engine(f"sqlite+pysqlite:///{destination}").connect() as connection:
         assert connection.scalar(text("SELECT app_version FROM application_versions")) == "0.8.3"
         assert connection.exec_driver_sql("PRAGMA integrity_check").scalar() == "ok"
+    assert not list(destination.parent.glob("knemora.db.tmp*"))
     engine.dispose()
