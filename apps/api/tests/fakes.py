@@ -22,7 +22,7 @@ class FakeLLMProvider:
             streaming=True,
             structured_output=True,
             cancellation=True,
-            max_context_tokens=4096,
+            max_context_tokens=8192,
         )
 
     async def health(self) -> LLMHealth:

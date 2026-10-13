@@ -40,11 +40,13 @@ from app.llm import (
     ChatRequest,
     ChatResponse,
     ChatToolCall,
+    ChatToolDefinition,
     ChatUsage,
     LLMCapabilities,
     LLMHealth,
 )
 from app.main import create_app
+from knowledge_agent.agent import _conflict_evidence_answer, _forced_retrieval_call
 
 
 def build_app(tmp_path: Path, provider: object | None = None) -> FastAPI:
@@ -233,6 +235,7 @@ def test_bm25_identity_graph_and_source_retrieval_are_bounded_and_provenanced(
         lexical_hits = retrieval.search(query="temperature medicines")
         topic_hits = retrieval.search(query="", page_types=(PageKind.TOPIC,), topics=("quality",))
         evidence = retrieval.read_page("ACME", max_claims=10)
+        evidence_by_search_path = retrieval.read_page(alias_hits[0].path, max_claims=10)
         related = retrieval.related_pages("GDP", max_depth=2, limit=10)
         backlinks = retrieval.backlinks("Acme Corporation", limit=10)
         source = access.read_source_reference(str(record.id), max_chars=8)
@@ -243,6 +246,7 @@ def test_bm25_identity_graph_and_source_retrieval_are_bounded_and_provenanced(
     assert [item.id for item in topic_hits] == [pages["gdp"].id]
     assert topic_hits[0].retrieval_mode == "structured_index"
     assert {claim.status for claim in evidence.claims} == {"supported", "disputed"}
+    assert evidence_by_search_path.id == evidence.id
     assert all(claim.citations for claim in evidence.claims)
     assert {item.id for item in related} >= {pages["acme"].id, pages["cold"].id}
     assert {item.id for item in backlinks} == {pages["cold"].id, pages["gdp"].id}
@@ -547,9 +551,86 @@ def test_dataset_compilation_adds_deterministic_wiki_metadata(tmp_path: Path) ->
     asyncio.run(exercise())
 
 
+def test_forced_retrieval_uses_meaningful_query_terms() -> None:
+    call = _forced_retrieval_call(
+        ChatRequest(
+            messages=(
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "The following is prior conversation data.\n"
+                        "[USER] What is LUMEN-QUAY?\n"
+                        "[ASSISTANT] It is an Atlas project.\n\n"
+                        "[CURRENT USER] What does the local knowledge say about the unrelated "
+                        "garden schedule?"
+                    ),
+                ),
+            ),
+            tools=(
+                ChatToolDefinition(
+                    name="search_wiki",
+                    description="Search the Wiki.",
+                    parameters={"type": "object", "properties": {}},
+                ),
+            ),
+        )
+    )
+
+    assert call is not None
+    assert call.name == "search_wiki"
+    assert call.arguments["query"] == "unrelated garden schedule"
+
+
+def test_conflict_answer_does_not_invent_source_precedence() -> None:
+    page_result = {
+        "page": {
+            "claims": [
+                {
+                    "text": "The Atlas Platform Team owns Project LUMEN-QUAY.",
+                    "citations": [
+                        {
+                            "wiki_path": "wiki/concepts/atlas-operations.md",
+                            "original_filename": "atlas-operations.md",
+                            "locator": {"line_start": 1, "line_end": 8},
+                        }
+                    ],
+                },
+                {
+                    "text": "The Atlas Platform Team does not own Project LUMEN-QUAY.",
+                    "citations": [
+                        {
+                            "wiki_path": "wiki/concepts/atlas-platform-team.md",
+                            "original_filename": "atlas-conflict.txt",
+                            "locator": {"line_start": 1, "line_end": 3},
+                        }
+                    ],
+                },
+            ]
+        }
+    }
+    answer = _conflict_evidence_answer(
+        (
+            ChatMessage(role="user", content="Resolve any conflict in the local Atlas material."),
+            ChatMessage(
+                role="tool",
+                name="read_wiki_page",
+                tool_call_id="read-1",
+                content=json.dumps(page_result),
+            ),
+        )
+    )
+
+    assert answer is not None
+    assert "conflict remains unresolved" in answer
+    assert "atlas-operations.md" in answer
+    assert "atlas-conflict.txt" in answer
+    assert "more authoritative" not in answer
+
+
 class AgentToolProvider:
-    def __init__(self, page_id: str) -> None:
+    def __init__(self, page_id: str, source_record_id: str) -> None:
         self.page_id = page_id
+        self.source_record_id = source_record_id
         self.requests: list[ChatRequest] = []
 
     @property
@@ -595,14 +676,34 @@ class AgentToolProvider:
                     ),
                 ),
             )
+        elif len(tool_messages) == 2:
+            page_payload = json.loads(tool_messages[-1].content)["page"]
+            citation = page_payload["claims"][0]["citations"][0]
+            assert citation["source_record_id"] == self.source_record_id
+            assert citation["wiki_path"] == page_payload["path"]
+            message = ChatMessage(
+                role="assistant",
+                tool_calls=(
+                    ChatToolCall(
+                        id="source-1",
+                        name="read_source_reference",
+                        arguments={
+                            "source_record_id": self.source_record_id,
+                            "max_chars": 1_000,
+                        },
+                    ),
+                ),
+            )
         else:
             assert "company.txt" in tool_messages[-1].content
+            assert "headquartered in Valletta" in tool_messages[-1].content
             message = ChatMessage(
                 role="assistant",
                 content=(
                     "Acme is headquartered in Valletta "
                     "[Wiki: Acme Corporation](wiki/entities/acme-corporation.md) "
-                    "[Source: company.txt, lines 1-1]."
+                    "[Source: company.txt, lines 1-1].\n\n"
+                    "### **Citations:**\n- Original filename: invented.md"
                 ),
             )
         return ChatResponse(
@@ -619,16 +720,16 @@ class AgentToolProvider:
 
 def test_adk_executes_search_then_page_read_before_grounded_answer(tmp_path: Path) -> None:
     seed_app = build_app(tmp_path)
-    _, record = ingest_text(seed_app)
+    _, record = ingest_text(seed_app, b"Acme Corporation is headquartered in Valletta.")
     pages = seed_wiki(seed_app, record)
-    provider = AgentToolProvider(pages["acme"].id)
+    provider = AgentToolProvider(pages["acme"].id, str(record.id))
     app = create_app(
         settings=seed_app.state.settings,
         provider=provider,
         engine=seed_app.state.engine,
     )
 
-    async def exercise() -> None:
+    async def exercise() -> str:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             conversation = await client.post("/api/v1/conversations", json={})
@@ -638,9 +739,14 @@ def test_adk_executes_search_then_page_read_before_grounded_answer(tmp_path: Pat
             )
         assert response.status_code == 200, response.text
         assert "Valletta" in response.json()["content"]
+        return str(response.json()["content"])
 
-    asyncio.run(exercise())
-    assert len(provider.requests) == 3
+    content = asyncio.run(exercise())
+    assert len(provider.requests) == 2
+    assert all(request.tool_choice == "auto" for request in provider.requests)
+    assert 'original filename: "company.txt"' in content
+    assert 'locator: {"line_end": 1, "line_start": 1}' in content
+    assert "invented.md" not in content
     assert {tool.name for tool in provider.requests[0].tools} == {
         "search_wiki",
         "read_wiki_page",

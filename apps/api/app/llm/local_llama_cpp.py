@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -19,8 +21,15 @@ from app.llm.contracts import (
     LLMCapabilities,
     LLMHealth,
 )
-from app.llm.errors import LLMResponseError, LLMUnavailableError
+from app.llm.errors import (
+    LLMResponseError,
+    LLMTimeoutError,
+    LLMTransportError,
+    LLMUnavailableError,
+)
 from app.observability import metrics_registry
+
+logger = logging.getLogger(__name__)
 
 
 class LocalLlamaCppProvider:
@@ -89,7 +98,7 @@ class LocalLlamaCppProvider:
                 }
                 for tool in request.tools
             ]
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = request.tool_choice or "auto"
         if stream:
             payload["stream_options"] = {"include_usage": True}
         return payload
@@ -126,6 +135,29 @@ class LocalLlamaCppProvider:
     def _client_or_new(self) -> httpx.AsyncClient:
         return self._client or httpx.AsyncClient(timeout=self._timeout)
 
+    def _request_timeout(self, request: ChatRequest) -> float | httpx.Timeout:
+        if request.timeout_seconds is None:
+            return self._timeout
+        ordinary_limit = min(self._timeout, request.timeout_seconds)
+        return httpx.Timeout(
+            connect=ordinary_limit,
+            read=request.timeout_seconds,
+            write=ordinary_limit,
+            pool=ordinary_limit,
+        )
+
+    @staticmethod
+    def _timeout_scope(exc: httpx.TimeoutException) -> str:
+        if isinstance(exc, httpx.ConnectTimeout):
+            return "connect"
+        if isinstance(exc, httpx.ReadTimeout):
+            return "read"
+        if isinstance(exc, httpx.WriteTimeout):
+            return "write"
+        if isinstance(exc, httpx.PoolTimeout):
+            return "pool"
+        return "request"
+
     async def health(self) -> LLMHealth:
         client = self._client_or_new()
         close_client = self._client is None
@@ -154,6 +186,7 @@ class LocalLlamaCppProvider:
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         started = time.monotonic()
+        timeout_seconds = request.timeout_seconds or self._timeout
         client = self._client_or_new()
         close_client = self._client is None
         try:
@@ -161,10 +194,47 @@ class LocalLlamaCppProvider:
                 f"{self._base_url}/v1/chat/completions",
                 headers=self._headers(),
                 json=self._payload(request, stream=False),
+                timeout=self._request_timeout(request),
             )
             response.raise_for_status()
             data = response.json()
-        except httpx.HTTPError as exc:
+        except asyncio.CancelledError:
+            self._record_request_failure(
+                request=request,
+                timeout_seconds=timeout_seconds,
+                started=started,
+                outcome="cancelled",
+            )
+            raise
+        except httpx.TimeoutException as exc:
+            timeout_scope = self._timeout_scope(exc)
+            effective_limit = (
+                timeout_seconds if timeout_scope == "read" else min(self._timeout, timeout_seconds)
+            )
+            self._record_request_failure(
+                request=request,
+                timeout_seconds=timeout_seconds,
+                started=started,
+                outcome=f"{timeout_scope}_timeout",
+            )
+            raise LLMTimeoutError(
+                f"llama.cpp {timeout_scope} exceeded its {effective_limit:g}-second deadline"
+            ) from exc
+        except httpx.TransportError as exc:
+            self._record_request_failure(
+                request=request,
+                timeout_seconds=timeout_seconds,
+                started=started,
+                outcome="transport_error",
+            )
+            raise LLMTransportError("llama.cpp request failed before a response arrived") from exc
+        except httpx.HTTPStatusError as exc:
+            self._record_request_failure(
+                request=request,
+                timeout_seconds=timeout_seconds,
+                started=started,
+                outcome=f"http_{exc.response.status_code}",
+            )
             raise LLMUnavailableError(f"llama.cpp request failed: {exc}") from exc
         except ValueError as exc:
             raise LLMResponseError("llama.cpp returned invalid JSON") from exc
@@ -194,9 +264,49 @@ class LocalLlamaCppProvider:
                     "llm.completion.tokens_per_second",
                     result.usage.completion_tokens / max(elapsed / 1_000, 0.001),
                 )
+            logger.info(
+                "llm_request_completed",
+                extra={
+                    "knemora_fields": {
+                        "model": self._model,
+                        "structured_output": request.response_schema is not None,
+                        "max_tokens": request.max_tokens,
+                        "timeout_seconds": timeout_seconds,
+                        "duration_ms": round(elapsed, 3),
+                        "prompt_tokens": result.usage.prompt_tokens,
+                        "completion_tokens": result.usage.completion_tokens,
+                        "finish_reason": result.finish_reason,
+                    }
+                },
+            )
             return result
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMResponseError("llama.cpp response did not match the chat contract") from exc
+
+    def _record_request_failure(
+        self,
+        *,
+        request: ChatRequest,
+        timeout_seconds: float,
+        started: float,
+        outcome: str,
+    ) -> None:
+        elapsed = (time.monotonic() - started) * 1_000
+        metrics_registry.increment(f"llm.request.{outcome}")
+        metrics_registry.observe("llm.request.duration", elapsed)
+        logger.warning(
+            "llm_request_failed",
+            extra={
+                "knemora_fields": {
+                    "model": self._model,
+                    "structured_output": request.response_schema is not None,
+                    "max_tokens": request.max_tokens,
+                    "timeout_seconds": timeout_seconds,
+                    "duration_ms": round(elapsed, 3),
+                    "outcome": outcome,
+                }
+            },
+        )
 
     @staticmethod
     def _tool_call(payload: dict[str, Any]) -> ChatToolCall:
@@ -215,6 +325,7 @@ class LocalLlamaCppProvider:
         started = time.monotonic()
         first_token_recorded = False
         completion_tokens: int | None = None
+        timeout_seconds = request.timeout_seconds or self._timeout
         client = self._client_or_new()
         close_client = self._client is None
         try:
@@ -223,6 +334,7 @@ class LocalLlamaCppProvider:
                 f"{self._base_url}/v1/chat/completions",
                 headers=self._headers(),
                 json=self._payload(request, stream=True),
+                timeout=self._request_timeout(request),
             ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
@@ -255,7 +367,33 @@ class LocalLlamaCppProvider:
                         finish_reason=finish_reason,
                         usage=usage,
                     )
-        except httpx.HTTPError as exc:
+        except asyncio.CancelledError:
+            metrics_registry.increment("llm.stream.cancelled")
+            logger.warning(
+                "llm_stream_failed",
+                extra={
+                    "knemora_fields": {
+                        "model": self._model,
+                        "max_tokens": request.max_tokens,
+                        "timeout_seconds": timeout_seconds,
+                        "outcome": "cancelled",
+                    }
+                },
+            )
+            raise
+        except httpx.TimeoutException as exc:
+            timeout_scope = self._timeout_scope(exc)
+            effective_limit = (
+                timeout_seconds if timeout_scope == "read" else min(self._timeout, timeout_seconds)
+            )
+            metrics_registry.increment(f"llm.stream.{timeout_scope}_timeout")
+            raise LLMTimeoutError(
+                f"llama.cpp stream {timeout_scope} exceeded its {effective_limit:g}-second deadline"
+            ) from exc
+        except httpx.TransportError as exc:
+            metrics_registry.increment("llm.stream.transport_error")
+            raise LLMTransportError("llama.cpp stream failed before completion") from exc
+        except httpx.HTTPStatusError as exc:
             raise LLMUnavailableError(f"llama.cpp stream failed: {exc}") from exc
         finally:
             elapsed = (time.monotonic() - started) * 1_000

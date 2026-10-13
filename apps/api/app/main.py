@@ -50,7 +50,13 @@ from app.knowledge.errors import (
 )
 from app.knowledge.routes import create_knowledge_router
 from app.llm import LLMProvider, LocalLlamaCppProvider
-from app.llm.errors import LLMProviderError
+from app.llm.errors import (
+    LLMContextOverflowError,
+    LLMProviderError,
+    LLMResponseTruncatedError,
+    LLMTimeoutError,
+    LLMTransportError,
+)
 from app.observability import RequestMetricsMiddleware, configure_logging, request_id_context
 from app.operations import create_operations_router
 from app.product import APP_VERSION, SystemMetadata, create_system_metadata
@@ -358,6 +364,38 @@ def create_app(
     @application.exception_handler(LLMProviderError)
     async def provider_failure(request: Request, exc: LLMProviderError) -> JSONResponse:
         logger.warning("llm_provider_failure", exc_info=exc)
+        if isinstance(exc, LLMContextOverflowError):
+            return _problem(
+                request,
+                http_status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                title="Turn exceeds model context",
+                detail=str(exc),
+                error_type="urn:knemora:error:llm-context-overflow",
+            )
+        if isinstance(exc, LLMResponseTruncatedError):
+            return _problem(
+                request,
+                http_status=status.HTTP_502_BAD_GATEWAY,
+                title="Local model answer was truncated",
+                detail=str(exc),
+                error_type="urn:knemora:error:llm-response-truncated",
+            )
+        if isinstance(exc, LLMTimeoutError):
+            return _problem(
+                request,
+                http_status=status.HTTP_504_GATEWAY_TIMEOUT,
+                title="Local model request timed out",
+                detail="The local model exceeded the bounded request deadline. Retry the request.",
+                error_type="urn:knemora:error:llm-timeout",
+            )
+        if isinstance(exc, LLMTransportError):
+            return _problem(
+                request,
+                http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                title="Local model connection failed",
+                detail="The application lost its connection to the local model runtime.",
+                error_type="urn:knemora:error:llm-transport",
+            )
         return _problem(
             request,
             http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -726,9 +764,17 @@ def create_app(
                 yield _sse("message.completed", {"event_id": event_id})
             except Exception as exc:
                 logger.exception("chat_stream_failed")
+                detail = (
+                    str(exc)
+                    if isinstance(
+                        exc,
+                        (LLMContextOverflowError, LLMResponseTruncatedError),
+                    )
+                    else "The local model could not complete the request."
+                )
                 yield _sse(
                     "error",
-                    {"event_id": event_id, "error": type(exc).__name__},
+                    {"event_id": event_id, "error": detail},
                 )
 
         return StreamingResponse(

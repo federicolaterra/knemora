@@ -50,8 +50,10 @@ class ChatRequest(BaseModel):
     messages: tuple[ChatMessage, ...]
     temperature: float = Field(default=0.1, ge=0, le=2)
     max_tokens: int = Field(default=1024, ge=1)
+    timeout_seconds: float | None = Field(default=None, gt=0)
     response_schema: dict[str, Any] | None = None
     tools: tuple[ChatToolDefinition, ...] = ()
+    tool_choice: str | dict[str, Any] | None = None
 
 
 class ChatUsage(BaseModel):

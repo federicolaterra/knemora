@@ -29,6 +29,8 @@ from app.llm import (
     LLMProvider,
     LocalLlamaCppProvider,
 )
+from app.llm.budget import fit_request_to_context
+from app.llm.errors import LLMResponseTruncatedError
 from app.observability import metrics_registry
 from knowledge_agent.tools import ToolCallable, create_agent_tools
 
@@ -57,6 +59,9 @@ Rules:
 - Before returning a company-knowledge answer, verify that the final text copies the exact Wiki
   `path`, `original_filename`, and `locator` fields from the tool evidence. Do not omit any of the
   three citation fields for brevity.
+- A claim citation's `wiki_path`, `original_filename`, and `locator` are authoritative. Never infer
+  an original filename from a page title or Wiki path, and never replace a source locator with claim
+  text. If those exact fields are unavailable, state that the citation is incomplete.
 - If evidence is missing, ambiguous, conflicting, or insufficient, say so explicitly rather than
   choosing a convenient claim or inventing facts, calculations, or citations.
 - Do not claim that an action, lookup, or persistence operation occurred unless a tool or the
@@ -73,6 +78,41 @@ EXTERNAL_SEARCH_REQUEST = re.compile(
     r")",
     flags=re.IGNORECASE | re.DOTALL,
 )
+DATASET_REQUEST = re.compile(
+    r"\b(?:csv|xlsx|spreadsheet|dataset|worksheet|column|revenue|chart|graph|"
+    r"average|mean|median|sum|total|ranking|compare)\b",
+    re.I,
+)
+SEARCH_STOP_WORDS = {
+    "a",
+    "about",
+    "according",
+    "and",
+    "answer",
+    "any",
+    "cite",
+    "does",
+    "explain",
+    "from",
+    "is",
+    "it",
+    "knowledge",
+    "local",
+    "material",
+    "me",
+    "of",
+    "please",
+    "say",
+    "source",
+    "summarize",
+    "tell",
+    "the",
+    "to",
+    "used",
+    "what",
+    "which",
+    "you",
+}
 
 
 def external_search_requested(text: str) -> bool:
@@ -137,6 +177,193 @@ def _instruction_text(instruction: Any) -> str:
     if isinstance(instruction, list):
         return "".join(_instruction_text(item) for item in instruction)
     return ""
+
+
+def _tool_choice(messages: Sequence[ChatMessage]) -> str | dict[str, Any]:
+    """Require retrieval for each turn and a page read after a successful Wiki search."""
+
+    latest_user = max(
+        (index for index, message in enumerate(messages) if message.role == "user"),
+        default=-1,
+    )
+    current_tools = [message for message in messages[latest_user + 1 :] if message.role == "tool"]
+    if not current_tools:
+        return "required"
+    wiki_searches = [message for message in current_tools if message.name == "search_wiki"]
+    page_reads = [message for message in current_tools if message.name == "read_wiki_page"]
+    if wiki_searches and not page_reads:
+        try:
+            results = json.loads(wiki_searches[-1].content).get("results", [])
+        except (AttributeError, json.JSONDecodeError):
+            results = []
+        if results:
+            return {"type": "function", "function": {"name": "read_wiki_page"}}
+    return "auto"
+
+
+def _latest_user_turn(
+    messages: Sequence[ChatMessage],
+) -> tuple[str, tuple[ChatMessage, ...]]:
+    latest_user = max(
+        (index for index, message in enumerate(messages) if message.role == "user"),
+        default=-1,
+    )
+    if latest_user < 0:
+        return "", ()
+    return _current_user_text(messages[latest_user].content), tuple(messages[latest_user + 1 :])
+
+
+def _current_user_text(content: str) -> str:
+    """Separate the current message from the untrusted transcript envelope."""
+
+    marker = "[CURRENT USER]"
+    if marker not in content:
+        return content
+    return content.rsplit(marker, maxsplit=1)[1].strip()
+
+
+def _knowledge_search_query(user_text: str) -> str:
+    """Remove conversational boilerplate without rewriting names or identifiers."""
+
+    terms = re.findall(r"[^\W_]+(?:-[^\W_]+)*", user_text, flags=re.UNICODE)
+    meaningful = [term for term in terms if term.casefold() not in SEARCH_STOP_WORDS]
+    return " ".join(meaningful) or user_text
+
+
+def _forced_retrieval_call(
+    request: ChatRequest, *, context_tokens: int | None = None
+) -> ChatToolCall | None:
+    """Deterministically enter owner-scoped Wiki retrieval for each knowledge turn."""
+
+    tool_names = {tool.name for tool in request.tools}
+    user_text, current_turn = _latest_user_turn(request.messages)
+    tool_messages = [message for message in current_turn if message.role == "tool"]
+    if not tool_messages:
+        if (
+            "search_wiki" not in tool_names
+            or external_search_requested(user_text)
+            or DATASET_REQUEST.search(user_text)
+        ):
+            return None
+        return ChatToolCall(
+            id=str(uuid.uuid4()),
+            name="search_wiki",
+            arguments={
+                "query": _knowledge_search_query(user_text),
+                "page_types": [],
+                "topics": [],
+                "limit": 4,
+            },
+        )
+
+    searches = [message for message in tool_messages if message.name == "search_wiki"]
+    page_reads = [message for message in tool_messages if message.name == "read_wiki_page"]
+    if searches and not page_reads and "read_wiki_page" in tool_names:
+        try:
+            results = json.loads(searches[-1].content).get("results", [])
+        except (AttributeError, json.JSONDecodeError):
+            results = []
+        if results and isinstance(results[0], dict) and results[0].get("id"):
+            return ChatToolCall(
+                id=str(uuid.uuid4()),
+                name="read_wiki_page",
+                arguments={
+                    "identifier": results[0]["id"],
+                    "max_claims": max(4, min(20, (context_tokens or 8192) // 512)),
+                },
+            )
+    return None
+
+
+def _ground_citations(text: str, messages: Sequence[ChatMessage]) -> str:
+    """Replace model-written citation metadata with exact current-turn tool evidence."""
+
+    _, current_turn = _latest_user_turn(messages)
+    citations: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for message in current_turn:
+        if message.role != "tool" or message.name != "read_wiki_page":
+            continue
+        try:
+            page = json.loads(message.content).get("page", {})
+        except (AttributeError, json.JSONDecodeError):
+            continue
+        for claim in page.get("claims", []):
+            for citation in claim.get("citations", []):
+                required = {
+                    key: citation.get(key) for key in ("wiki_path", "original_filename", "locator")
+                }
+                if not all(value is not None for value in required.values()):
+                    continue
+                identity = json.dumps(required, sort_keys=True, ensure_ascii=False)
+                if identity not in seen:
+                    seen.add(identity)
+                    citations.append(required)
+    if not citations:
+        return text
+    answer = re.split(
+        r"\n\s*(?:#{1,6}\s*)?\*{0,2}(?:citation|citations|sources)\b[^\n]*(?:\n|$)",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].rstrip()
+    lines = [answer, "", "Citations:"]
+    for citation in citations:
+        lines.append(
+            "- Wiki path: "
+            f"{json.dumps(citation['wiki_path'], ensure_ascii=False)}; original filename: "
+            f"{json.dumps(citation['original_filename'], ensure_ascii=False)}; locator: "
+            f"{json.dumps(citation['locator'], sort_keys=True, ensure_ascii=False)}"
+        )
+    return "\n".join(lines)
+
+
+def _conflict_evidence_answer(messages: Sequence[ChatMessage]) -> str | None:
+    """Keep conflict answers conservative when evidence has no precedence metadata."""
+
+    user_text, current_turn = _latest_user_turn(messages)
+    if "conflict" not in user_text.casefold():
+        return None
+    evidence: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for message in current_turn:
+        if message.role != "tool" or message.name != "read_wiki_page":
+            continue
+        try:
+            page = json.loads(message.content).get("page", {})
+        except (AttributeError, json.JSONDecodeError):
+            continue
+        for claim in page.get("claims", []):
+            for citation in claim.get("citations", []):
+                required = {
+                    key: citation.get(key) for key in ("wiki_path", "original_filename", "locator")
+                }
+                if not all(value is not None for value in required.values()):
+                    continue
+                identity = json.dumps(
+                    {"text": claim.get("text"), **required},
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+                if identity not in seen:
+                    seen.add(identity)
+                    evidence.append((str(claim.get("text", "")), required))
+    if not evidence:
+        return None
+    lines = [
+        "The retrieved sources contain conflicting claims. The evidence does not include source "
+        "precedence metadata, so the conflict remains unresolved.",
+        "",
+        "Evidence:",
+    ]
+    for claim_text, citation in evidence:
+        lines.append(
+            f"- {claim_text} — Wiki path: "
+            f"{json.dumps(citation['wiki_path'], ensure_ascii=False)}; original filename: "
+            f"{json.dumps(citation['original_filename'], ensure_ascii=False)}; locator: "
+            f"{json.dumps(citation['locator'], sort_keys=True, ensure_ascii=False)}"
+        )
+    return "\n".join(lines)
 
 
 def _usage_metadata(response: Any) -> types.GenerateContentResponseUsageMetadata | None:
@@ -205,7 +432,7 @@ class ProviderLlm(BaseLlm):
         elif isinstance(schema, type) and issubclass(schema, BaseModel):
             response_schema = schema.model_json_schema()
 
-        return ChatRequest(
+        request = ChatRequest(
             messages=tuple(messages),
             temperature=(
                 0.1 if llm_request.config.temperature is None else llm_request.config.temperature
@@ -213,7 +440,9 @@ class ProviderLlm(BaseLlm):
             max_tokens=llm_request.config.max_output_tokens or self.max_output_tokens,
             response_schema=response_schema,
             tools=_tool_definitions(llm_request),
+            tool_choice=_tool_choice(messages) if _tool_definitions(llm_request) else None,
         )
+        return fit_request_to_context(request, self.provider.capabilities.max_context_tokens)
 
     @staticmethod
     def _record_call(request: ChatRequest, response: Any, started: float) -> None:
@@ -244,9 +473,35 @@ class ProviderLlm(BaseLlm):
     ) -> AsyncGenerator[LlmResponse, None]:
         request = self._request(llm_request)
         if request.tools:
+            if forced_call := _forced_retrieval_call(
+                request,
+                context_tokens=self.provider.capabilities.max_context_tokens,
+            ):
+                yield LlmResponse(
+                    content=types.Content(
+                        role="model",
+                        parts=[
+                            types.Part(
+                                function_call=types.FunctionCall(
+                                    id=forced_call.id,
+                                    name=forced_call.name,
+                                    args=forced_call.arguments,
+                                )
+                            )
+                        ],
+                    ),
+                    partial=False,
+                    model_version=self.model,
+                )
+                return
             started = time.monotonic()
             response = await self.provider.chat(request)
             self._record_call(request, response, started)
+            if response.finish_reason == "length":
+                raise LLMResponseTruncatedError(
+                    "The local model reached its output limit before completing the answer. "
+                    "Narrow the question or increase the validated output/context budget."
+                )
             if response.message.tool_calls:
                 parts = [
                     types.Part(
@@ -263,7 +518,9 @@ class ProviderLlm(BaseLlm):
                     usage_metadata=_usage_metadata(response),
                 )
                 return
-            visible = strip_hidden_reasoning(response.message.content)
+            visible = _conflict_evidence_answer(request.messages) or _ground_citations(
+                strip_hidden_reasoning(response.message.content), request.messages
+            )
             yield LlmResponse(
                 content=types.Content(role="model", parts=[types.Part.from_text(text=visible)]),
                 partial=False,
@@ -276,6 +533,11 @@ class ProviderLlm(BaseLlm):
             started = time.monotonic()
             response = await self.provider.chat(request)
             self._record_call(request, response, started)
+            if response.finish_reason == "length":
+                raise LLMResponseTruncatedError(
+                    "The local model reached its output limit before completing the answer. "
+                    "Narrow the question or increase the validated output/context budget."
+                )
             visible = strip_hidden_reasoning(response.message.content)
             yield LlmResponse(
                 content=types.Content(role="model", parts=[types.Part.from_text(text=visible)]),
@@ -288,7 +550,10 @@ class ProviderLlm(BaseLlm):
 
         raw = ""
         emitted = ""
+        finish_reason: str | None = None
         async for chunk in self.provider.stream(request):
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
             raw += chunk.delta
             visible = strip_hidden_reasoning(raw)
             if visible.startswith(emitted):
@@ -302,6 +567,11 @@ class ProviderLlm(BaseLlm):
                         partial=True,
                         model_version=chunk.model,
                     )
+        if finish_reason == "length":
+            raise LLMResponseTruncatedError(
+                "The local model reached its output limit before completing the answer. "
+                "Narrow the question or increase the validated output/context budget."
+            )
         final_text = strip_hidden_reasoning(raw)
         yield LlmResponse(
             content=types.Content(role="model", parts=[types.Part.from_text(text=final_text)]),
@@ -328,7 +598,8 @@ async def guard_user_input(context: Context, llm_request: LlmRequest) -> LlmResp
         (
             text
             for content in reversed(llm_request.contents)
-            if content.role == "user" and (text := _content_text(content).strip())
+            if content.role == "user"
+            and (text := _current_user_text(_content_text(content).strip()))
         ),
         "",
     )

@@ -52,9 +52,11 @@ def _instrument_tool(tool: ToolCallable) -> ToolCallable:
 
 
 def _citation_payload(citation: Any) -> dict[str, Any]:
-    """Keep the citation fields the agent must quote without repeating internal IDs."""
+    """Keep the citation fields needed for quotation and authorized source drilldown."""
 
     return {
+        "wiki_path": citation.wiki_path,
+        "source_record_id": citation.source_record_id,
         "original_filename": citation.original_filename,
         "locator": citation.locator,
     }
@@ -207,7 +209,13 @@ def create_agent_tools(
                         owner_id=owner_id(session, tool_context, permission="knowledge.read"),
                     )
                     .retrieval()
-                    .read_page(identifier, max_claims=max_claims)
+                    .read_page(
+                        identifier,
+                        max_claims=min(
+                            max_claims,
+                            max(4, min(20, settings.llm_context_tokens // 512)),
+                        ),
+                    )
                 )
             return {"status": "success", "page": _agent_page_payload(page)}
         except (KnowledgeError, PermissionError) as exc:
@@ -239,7 +247,11 @@ def create_agent_tools(
                         owner_id=owner_id(session, tool_context, permission="knowledge.read"),
                     )
                     .retrieval()
-                    .related_pages(identifier, max_depth=max_depth, limit=limit)
+                    .related_pages(
+                        identifier,
+                        max_depth=max_depth,
+                        limit=min(limit, max(4, settings.llm_context_tokens // 1024)),
+                    )
                 )
             return {
                 "status": "success",
@@ -272,7 +284,10 @@ def create_agent_tools(
                         owner_id=owner_id(session, tool_context, permission="knowledge.read"),
                     )
                     .retrieval()
-                    .backlinks(identifier, limit=limit)
+                    .backlinks(
+                        identifier,
+                        limit=min(limit, max(4, settings.llm_context_tokens // 1024)),
+                    )
                 )
             return {
                 "status": "success",
@@ -302,7 +317,14 @@ def create_agent_tools(
                     session=session,
                     settings=settings,
                     owner_id=owner_id(session, tool_context, permission="knowledge.read"),
-                ).read_source_reference(source_record_id, max_chars=max_chars)
+                ).read_source_reference(
+                    source_record_id,
+                    max_chars=min(
+                        max_chars,
+                        settings.source_reference_max_chars,
+                        max(1_000, settings.llm_context_tokens),
+                    ),
+                )
             return {"status": "success", "source": source.model_dump(mode="json")}
         except (KnowledgeError, PermissionError) as exc:
             return {"status": "error", "error": str(exc)}

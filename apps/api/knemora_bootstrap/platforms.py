@@ -22,6 +22,7 @@ class Hardware:
     memory_gb: float | None
     accelerator: str
     unified_memory_gb: float | None
+    available_memory_gb: float | None = None
 
 
 def _run(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -46,8 +47,32 @@ class MacOSAdapter(PlatformAdapter):
 
     def hardware(self) -> Hardware:
         memory: float | None = None
+        available: float | None = None
         with suppress(OSError, ValueError, subprocess.CalledProcessError):
             memory = int(_run(["sysctl", "-n", "hw.memsize"]).stdout.strip()) / 1024**3
+        with suppress(OSError, ValueError, subprocess.CalledProcessError):
+            output = _run(["vm_stat"]).stdout
+            page_size_match = next(
+                (part for part in output.splitlines()[0].split() if part.isdigit()),
+                "4096",
+            )
+            page_size = int(page_size_match)
+            pages: dict[str, int] = {}
+            for line in output.splitlines()[1:]:
+                if ":" not in line:
+                    continue
+                name, raw = line.split(":", 1)
+                pages[name.strip()] = int(raw.strip().rstrip("."))
+            available_pages = sum(
+                pages.get(name, 0)
+                for name in (
+                    "Pages free",
+                    "Pages inactive",
+                    "Pages speculative",
+                    "Pages purgeable",
+                )
+            )
+            available = available_pages * page_size / 1024**3
         architecture = platform.machine()
         return Hardware(
             os="macOS",
@@ -55,6 +80,7 @@ class MacOSAdapter(PlatformAdapter):
             memory_gb=memory,
             accelerator="Apple Metal" if architecture == "arm64" else "unsupported",
             unified_memory_gb=memory if architecture == "arm64" else None,
+            available_memory_gb=available,
         )
 
     def check_prerequisites(self) -> list[str]:

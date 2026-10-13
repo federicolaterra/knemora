@@ -13,7 +13,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
 
-from knemora_bootstrap.configuration import AppPaths, runtime_environment
+from knemora_bootstrap.configuration import (
+    AppPaths,
+    confirm_model_selection,
+    resolve_context_preference,
+    rollback_model_selection,
+    runtime_environment,
+    write_model_selection,
+)
+from knemora_bootstrap.model_context import (
+    ModelContextError,
+    describe_context_admission,
+    plan_context,
+)
+from knemora_bootstrap.models import ModelRegistry, enrich_model_from_local_gguf
 from knemora_bootstrap.native_runtime import NativeRuntimeError, NativeRuntimeManager
 from knemora_bootstrap.platforms import PlatformAdapter
 
@@ -50,11 +63,18 @@ class RuntimeManager:
         web_search_enabled: bool = False,
     ) -> None:
         requested_mode = "development" if demo else "normal"
+        try:
+            selection_payload = json.loads(
+                (self.paths.config / "model.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            raise RuntimeFailure(f"Model selection is missing or invalid: {exc}.") from exc
         profile_changed = (
             self.current_mode() != requested_mode
             or self.current_web_search_enabled() != web_search_enabled
         )
-        if profile_changed and any(
+        selection_changed = isinstance(selection_payload.get("previous_selection"), dict)
+        if (profile_changed or selection_changed) and any(
             status.running for status in self.status() if status.name != "database"
         ):
             print(
@@ -62,6 +82,40 @@ class RuntimeManager:
                 f"{'enabled' if web_search_enabled else 'disabled'}."
             )
             self.stop()
+        try:
+            selected_model = ModelRegistry(self.paths.model_registry).get(
+                str(selection_payload["model_id"])
+            )
+            selected_model = enrich_model_from_local_gguf(selected_model, self.paths.models)
+            selected_model_path = Path(str(selection_payload["path"]))
+            preference = resolve_context_preference(self.paths, selected_model)
+            startup_plan = plan_context(
+                selected_model,
+                self.platform.hardware(),
+                configured_context_tokens=preference.tokens,
+                source=preference.source,
+                explicit=preference.explicit,
+            )
+        except (OSError, ValueError, KeyError, TypeError, ModelContextError, RuntimeError) as exc:
+            rolled_back = rollback_model_selection(self.paths)
+            suffix = " The prior model selection was restored." if rolled_back else ""
+            detail = str(exc).rstrip(".")
+            raise RuntimeFailure(f"Model startup preflight failed: {detail}.{suffix}") from exc
+        print(f"Starting {selected_model.display_name}. {describe_context_admission(startup_plan)}")
+        try:
+            write_model_selection(
+                self.paths,
+                selected_model,
+                selected_model_path,
+                plan=startup_plan,
+            )
+        except OSError as exc:
+            rolled_back = rollback_model_selection(self.paths)
+            suffix = " The prior model selection was restored." if rolled_back else ""
+            detail = str(exc).rstrip(".")
+            raise RuntimeFailure(
+                f"Could not record the startup context plan: {detail}.{suffix}"
+            ) from exc
         env = runtime_environment(
             self.paths,
             demo=demo,
@@ -70,14 +124,19 @@ class RuntimeManager:
         try:
             selection = self.native_runtime.resolve_llama()
         except NativeRuntimeError as exc:
-            raise RuntimeFailure(str(exc)) from exc
+            rolled_back = rollback_model_selection(self.paths)
+            suffix = " The prior model selection was restored." if rolled_back else ""
+            raise RuntimeFailure(str(exc) + suffix) from exc
         env["LLAMA_SERVER_BIN"] = str(selection.executable)
         if demo and not demo_database_prepared:
             self.prepare_demo_database()
         script = self.paths.repository / "infrastructure" / "scripts" / "start-local-release.sh"
         result = subprocess.run([str(script)], cwd=self.paths.repository, env=env, check=False)
         if result.returncode:
-            raise RuntimeFailure("A local service failed to launch. Run ./knemora logs.")
+            self._cleanup_failed_start(env)
+            rolled_back = rollback_model_selection(self.paths)
+            suffix = " The prior model selection was restored." if rolled_back else ""
+            raise RuntimeFailure("A local service failed to launch. Run ./knemora logs." + suffix)
         failures = self.wait_until_ready()
         failures.extend(
             f"managed {status.name} process exited after launch; another process may own its port"
@@ -89,7 +148,11 @@ class RuntimeManager:
                 "FastAPI is healthy in the wrong mode; stop existing Knemora services and retry"
             )
         if failures:
-            raise RuntimeFailure("; ".join(failures))
+            self._cleanup_failed_start(env)
+            rolled_back = rollback_model_selection(self.paths)
+            suffix = " The prior model selection was restored." if rolled_back else ""
+            raise RuntimeFailure("; ".join(failures) + suffix)
+        confirm_model_selection(self.paths)
         self._write_mode(requested_mode, web_search_enabled=web_search_enabled)
         if open_apps:
             self.open_apps(demo=demo)
@@ -115,6 +178,12 @@ class RuntimeManager:
             raise RuntimeFailure(
                 "Stop did not shut down every Knemora service: " + ", ".join(sorted(set(running)))
             )
+
+    def _cleanup_failed_start(self, env: dict[str, str]) -> None:
+        """Best-effort cleanup for processes launched by the failed attempt."""
+
+        script = self.paths.repository / "infrastructure" / "scripts" / "stop-local-release.sh"
+        subprocess.run([str(script)], cwd=self.paths.repository, env=env, check=False)
 
     def prepare_demo_database(self) -> None:
         """Create and migrate the isolated demo database before preset seeding."""

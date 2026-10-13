@@ -6,6 +6,28 @@ and established interfaces.
 
 ## [Unreleased]
 
+### Added
+
+- GGUF-derived model context profiles, unified-memory startup preflight, per-model context
+  overrides, and CLI diagnostics for advertised, configured, and effective context.
+- Provider-neutral prompt budgeting with bounded history/tool evidence and actionable context or
+  truncation errors.
+
+### Fixed
+
+- Knowledge compilation now uses a bounded 300-second deadline per structured-output attempt,
+  preserving its single context-safe truncation retry without inheriting ordinary chat's shorter
+  deadline. Slower healthy systems can override this response-read timeout through `.env` without
+  changing context, token limits, or retry count. Timeout and transport failures are reported
+  accurately and emit content-free timing, token-count, retry-cause, and correlation telemetry.
+- Automatic model profiles are re-evaluated at every start and can safely fall back from the full
+  8,192-token Qwen profile to 4,096 tokens without being mistaken for explicit user overrides.
+- Context diagnostics now distinguish automatic full/reduced admission from explicit rejection,
+  describe reduced-context quality limits, and label memory assessments as time-dependent.
+- Failed model startup now restores the prior selection without initiating knowledge work.
+- Intentional compilation now requires each existing-page proposal to be grounded in every cited
+  source record and skips byte-identical Wiki writes, index rebuilds, and manifest rewrites.
+
 ## [0.1.0-alpha] - 2026-10-11
 
 ### Added

@@ -45,8 +45,8 @@ every archived file. Legacy format-1 archives without home fields are recognized
 baseline; a newer unsupported home fails validation before live replacement. Archives are built
 under a temporary name, fully validated, and atomically promoted. GGUF files, `.env`, credentials,
 logs, `bin/`, managed Python, caches/runtime provenance, Development demo data, and rebuildable Wiki
-indexes are excluded. Keep backup media encrypted because source documents and SQLite remain
-sensitive.
+search and graph indexes are excluded. Keep backup media encrypted because source documents and
+SQLite remain sensitive.
 
 `--db-only` protects relational records only. It does not include Wiki notes, original documents,
 attachments, dataset files, or portable model configuration.
@@ -83,6 +83,10 @@ model selection is not overwritten with an unusable path.
 
 After restore, run `./knemora start` and verify sign-in, documents, original downloads, Knowledge
 links/search, a cited answer, datasets, conversations, settings, and audit history.
+The restored database replaces local account records and password hashes, so credentials from the
+backup are authoritative. The destination setup password is no longer valid unless it happens to
+match a restored account; keep source credentials available or reset a restored account after
+sign-in.
 
 Backups are independent historical archives. Source deletion never edits an existing archive; a new
 full backup made after completed cleanup omits the deleted source and its active knowledge. Explicitly

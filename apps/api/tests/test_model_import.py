@@ -33,6 +33,7 @@ from knemora_bootstrap.models import (
     ModelManager,
     ModelRegistry,
     ModelSpec,
+    enrich_model_from_local_gguf,
 )
 from knemora_bootstrap.native_runtime import RuntimeSelection
 from knemora_bootstrap.platforms import Hardware
@@ -40,6 +41,23 @@ from knemora_bootstrap.platforms import Hardware
 
 def gguf_payload(suffix: bytes = b"") -> bytes:
     return b"GGUF" + struct.pack("<IQQ", 3, 0, 0) + suffix
+
+
+def gguf_metadata_payload(entries: dict[str, str | int]) -> bytes:
+    payload = bytearray(b"GGUF" + struct.pack("<IQQ", 3, 0, len(entries)))
+    for key, value in entries.items():
+        encoded_key = key.encode()
+        payload.extend(struct.pack("<Q", len(encoded_key)))
+        payload.extend(encoded_key)
+        if isinstance(value, str):
+            encoded_value = value.encode()
+            payload.extend(struct.pack("<I", 8))
+            payload.extend(struct.pack("<Q", len(encoded_value)))
+            payload.extend(encoded_value)
+        else:
+            payload.extend(struct.pack("<I", 4))
+            payload.extend(struct.pack("<I", value))
+    return bytes(payload)
 
 
 class FakeHuggingFaceClient(HuggingFaceClient):
@@ -95,6 +113,75 @@ def test_external_reference_parser_accepts_only_explicit_hugging_face_grammar() 
 def test_model_id_generation_is_deterministic_and_cli_safe() -> None:
     assert generate_model_id("ISTA-DASLab/Qwen3-8B-GGUF-GSQ", "Q3_K_M") == "qwen3-8b-q3-k-m"
     assert generate_model_id("owner/My.Model-GGUF", "IQ2_S") == "my-model-iq2-s"
+
+
+def test_import_persists_trustworthy_gguf_context_and_architecture_metadata(
+    tmp_path: Path,
+) -> None:
+    payload = gguf_metadata_payload(
+        {
+            "general.architecture": "spark2_5",
+            "spark2_5.context_length": 32_768,
+            "spark2_5.embedding_length": 2560,
+            "spark2_5.block_count": 36,
+            "spark2_5.attention.head_count": 20,
+            "spark2_5.attention.head_count_kv": 4,
+        }
+    )
+    paths = AppPaths(repository=tmp_path / "repo", data=tmp_path / "data")
+    client = FakeHuggingFaceClient(artifact_for(payload), payload)
+    model = ModelImporter(
+        paths.models,
+        ModelRegistry(paths.model_registry),
+        client,
+    ).import_model("hf:owner/Example-GGUF:Q3_K_M")
+
+    assert model.metadata_architecture == "spark2_5"
+    assert model.advertised_context_tokens == 32_768
+    assert model.context_tokens == 8192
+    assert model.block_count == 36
+    assert model.attention_head_count_kv == 4
+
+
+def test_legacy_user_model_uses_installed_gguf_metadata_without_reimport(
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths(repository=tmp_path / "repo", data=tmp_path / "data")
+    paths.models.mkdir(parents=True)
+    payload = gguf_metadata_payload(
+        {
+            "general.architecture": "spark2_5",
+            "spark2_5.context_length": 32_768,
+            "spark2_5.embedding_length": 2560,
+            "spark2_5.block_count": 36,
+            "spark2_5.attention.head_count": 20,
+            "spark2_5.attention.head_count_kv": 4,
+        }
+    )
+    artifact = paths.models / "legacy.gguf"
+    artifact.write_bytes(payload)
+    legacy = ModelSpec(
+        id="legacy",
+        display_name="Legacy custom model",
+        provider="llama_cpp",
+        repository="owner/legacy",
+        filename=artifact.name,
+        quantization="Q4_K_M",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size_bytes=len(payload),
+        required_free_bytes=len(payload),
+        recommended_memory_gb=4,
+        context_tokens=4096,
+        license_url="https://example.invalid",
+        origin="user",
+        local_path=str(artifact),
+    )
+
+    enriched = enrich_model_from_local_gguf(legacy, paths.models)
+
+    assert enriched.metadata_architecture == "spark2_5"
+    assert enriched.advertised_context_tokens == 32_768
+    assert enriched.context_tokens == 8192
 
 
 def test_artifact_resolution_prefers_exact_then_requires_unique_normalized_match() -> None:
@@ -276,6 +363,23 @@ def test_registered_import_can_be_selected_without_network(
     repository.mkdir()
     paths = AppPaths(repository=repository, data=tmp_path / "data")
     model = import_fixture(paths)
+    paths.wiki.mkdir(parents=True)
+    wiki_page = paths.wiki / "unrelated.md"
+    wiki_page.write_text("unchanged knowledge\n", encoding="utf-8")
+    wiki_digest = hashlib.sha256(wiki_page.read_bytes()).hexdigest()
+    graph_state = paths.wiki / ".knemora" / "graph-index.json"
+    graph_state.parent.mkdir(parents=True)
+    graph_state.write_text('{"nodes": ["stable"]}\n', encoding="utf-8")
+    dataset = paths.data / "datasets" / "stable.csv"
+    dataset.parent.mkdir(parents=True)
+    dataset.write_text("name,value\nstable,1\n", encoding="utf-8")
+    source = paths.sources / "stable" / "original.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("immutable source\n", encoding="utf-8")
+    preserved = {
+        path: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (graph_state, dataset, source)
+    }
     server = tmp_path / "llama-server"
     server.write_text("binary", encoding="utf-8")
 
@@ -325,7 +429,10 @@ def test_registered_import_can_be_selected_without_network(
     selection = json.loads((paths.config / "model.json").read_text(encoding="utf-8"))
     assert selection["model_id"] == model.id
     assert selection["path"] == str(ModelManager(paths.models).path_for(model))
+    assert selection["context_tokens"] == 4096
     assert ModelRegistry(paths.model_registry).get(model.id) == model
+    assert hashlib.sha256(wiki_page.read_bytes()).hexdigest() == wiki_digest
+    assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in preserved} == preserved
 
 
 def test_removal_is_two_stage_for_user_and_curated_models(tmp_path: Path) -> None:

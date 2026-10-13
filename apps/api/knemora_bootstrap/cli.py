@@ -19,6 +19,8 @@ from knemora_bootstrap.configuration import (
     ensure_repository_env,
     mark_setup_complete,
     read_backup_path,
+    resolve_context_preference,
+    rollback_model_selection,
     runtime_environment,
     setup_is_complete,
     update_repository_database_url,
@@ -26,12 +28,14 @@ from knemora_bootstrap.configuration import (
     write_model_selection,
 )
 from knemora_bootstrap.development_preset import CANONICAL_PROMPT
+from knemora_bootstrap.model_context import describe_context_admission, plan_context
 from knemora_bootstrap.model_import import HuggingFaceArtifact, ModelImporter, partial_path_for
 from knemora_bootstrap.models import (
     DEFAULT_MODEL_ID,
     ModelManager,
     ModelRegistry,
     ModelSpec,
+    enrich_model_from_local_gguf,
     get_model,
 )
 from knemora_bootstrap.native_runtime import NativeRuntimeManager
@@ -119,8 +123,9 @@ class SetupManager:
         self.paths = paths
         self.platform = platform
 
-    def run(self, *, model_id: str) -> None:
+    def run(self, *, model_id: str, context_tokens: int | None = None) -> None:
         model = get_model(model_id, self.paths.model_registry)
+        model = enrich_model_from_local_gguf(model, self.paths.models)
         failures = self.platform.check_prerequisites()
         if failures:
             raise RuntimeError("\n".join(f"- {failure}" for failure in failures))
@@ -135,12 +140,38 @@ class SetupManager:
                 f"accelerator: {hardware.accelerator}."
             )
         )
-        if hardware.memory_gb and hardware.memory_gb < model.recommended_memory_gb:
-            guidance = "advisory memory estimate" if model.is_user_import else "recommendation"
-            print(
-                f"Warning: {model.display_name} has a {model.recommended_memory_gb} GB {guidance}; "
-                "continuing because the model was explicitly selected."
-            )
+        preference = resolve_context_preference(
+            self.paths,
+            model,
+            cli_context_tokens=context_tokens,
+        )
+        context_plan = plan_context(
+            model,
+            hardware,
+            configured_context_tokens=preference.tokens,
+            source=preference.source,
+            explicit=preference.explicit,
+        )
+        memory = context_plan.memory
+        budget = (
+            f"{memory.safe_budget_bytes / 1024**3:.2f} GiB safe budget"
+            if memory.safe_budget_bytes is not None
+            else "host budget unavailable"
+        )
+        advertised = (
+            f"{context_plan.advertised_context_tokens:,} advertised"
+            if context_plan.advertised_context_tokens is not None
+            else "advertised maximum unavailable"
+        )
+        print(
+            f"Context preflight: {context_plan.effective_context_tokens:,} effective tokens "
+            f"({advertised}; {context_plan.reason})."
+        )
+        print(describe_context_admission(context_plan))
+        print(
+            f"Memory preflight: {memory.total_bytes / 1024**3:.2f} GiB estimated, {budget}; "
+            f"uncertainty {memory.uncertainty}."
+        )
         HomeCompatibilityService(self.paths.data, repository=self.paths.repository).ensure_current()
         self.paths.initialize()
         ensure_repository_env(self.paths)
@@ -153,9 +184,19 @@ class SetupManager:
         )
         print(f"Ensuring model: {model.display_name} ({model.quantization})")
         model_path = ModelManager(self.paths.models).ensure(model)
-        write_model_selection(self.paths, model, model_path)
         self._prepare_database()
-        mark_setup_complete(self.paths, model)
+        write_model_selection(
+            self.paths,
+            model,
+            model_path,
+            plan=context_plan,
+            explicit_context_tokens=context_tokens,
+        )
+        try:
+            mark_setup_complete(self.paths, model)
+        except OSError:
+            rollback_model_selection(self.paths)
+            raise
         print("Setup complete. Existing configuration and user data were preserved.")
         print(
             "Local administrator sign-in values are stored only in "
@@ -232,6 +273,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     setup = sub.add_parser("setup", help="prepare dependencies, model, configuration, and database")
     setup.add_argument("--model", default="default", help="stable model registry ID")
+    setup.add_argument(
+        "--context-tokens",
+        type=int,
+        help="validated per-model context override (minimum 4096; never exceeds GGUF capability)",
+    )
     migrate = sub.add_parser(
         "migrate-postgresql",
         help="safely import an existing PostgreSQL installation into SQLite",
@@ -562,7 +608,32 @@ def _print_models(paths: AppPaths) -> None:
 
 def _print_model_info(paths: AppPaths, model_id: str) -> None:
     model = ModelRegistry(paths.model_registry).get(model_id)
+    model = enrich_model_from_local_gguf(model, paths.models)
+    preference = resolve_context_preference(paths, model)
     manager = ModelManager(paths.models)
+    selection: dict[str, object] = {}
+    try:
+        raw_selection = json.loads((paths.config / "model.json").read_text(encoding="utf-8"))
+        if isinstance(raw_selection, dict) and raw_selection.get("model_id") == model.id:
+            selection = raw_selection
+    except (OSError, ValueError, TypeError):
+        pass
+    selected_context = selection.get("context_tokens")
+    estimated_memory = selection.get("estimated_memory_bytes")
+    safe_budget = selection.get("safe_memory_budget_bytes")
+    if isinstance(estimated_memory, int):
+        budget_detail = (
+            f" versus {safe_budget / 1024**3:.2f} GiB safe budget"
+            if isinstance(safe_budget, int)
+            else "; safe budget unavailable"
+        )
+        memory_assessment = (
+            f"last preflight: {estimated_memory / 1024**3:.2f} GiB estimated{budget_detail} "
+            f"({selection.get('memory_estimate_uncertainty', 'uncertainty unavailable')}); "
+            "time-dependent and not a launch guarantee"
+        )
+    else:
+        memory_assessment = "not preflighted; launch admission is time-dependent"
     values = (
         ("ID", model.id),
         ("Origin", "user" if model.is_user_import else "Knemora curated"),
@@ -575,6 +646,24 @@ def _print_model_info(paths: AppPaths, model_id: str) -> None:
         ("Checksum", f"sha256:{model.sha256}"),
         ("Verification", model.verification_status),
         ("Compatibility", model.compatibility_status),
+        (
+            "Advertised context",
+            (
+                f"{model.advertised_context_tokens:,} tokens"
+                if model.advertised_context_tokens is not None
+                else "unavailable; conservative profile only"
+            ),
+        ),
+        ("Profile context", f"{model.context_tokens:,} tokens"),
+        ("Configured preference", f"{preference.tokens:,} tokens"),
+        ("Configuration mode", "explicit" if preference.explicit else "automatic"),
+        (
+            "Effective context (last preflight)",
+            (f"{selected_context:,} tokens" if isinstance(selected_context, int) else "not active"),
+        ),
+        ("Context source", preference.source),
+        ("Last preflight rationale", str(selection.get("context_reason", "not active"))),
+        ("Memory assessment", memory_assessment),
         ("Artifact status", manager.artifact_status(model)),
         ("License reference", model.license_url),
         ("Imported at", model.imported_at or "distributed with Knemora"),
@@ -897,6 +986,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Restored:         {', '.join(restore_result.restored_roots)}")
             print(f"Active database:  {restore_result.database}")
             print(f"Recovery archive: {restore_result.recovery_archive}")
+            print(
+                "Credentials:      Restored accounts and password hashes are authoritative; "
+                "sign in with credentials from the backup. The destination setup password "
+                "is no longer authoritative."
+            )
             if restore_result.backup_type == "database":
                 print("Existing Wiki and source files were preserved by explicit request.")
             if restore_result.archived_model_id:
@@ -978,7 +1072,10 @@ def main(argv: list[str] | None = None) -> int:
         if command == "setup":
             if args.non_interactive and not args.yes:
                 raise RuntimeError("Non-interactive setup requires --yes.")
-            SetupManager(paths, platform).run(model_id=args.model)
+            SetupManager(paths, platform).run(
+                model_id=args.model,
+                context_tokens=args.context_tokens,
+            )
             return 0
         if command == "migrate-postgresql":
             api_directory = paths.repository / "apps/api"

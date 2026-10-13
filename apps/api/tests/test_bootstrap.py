@@ -178,9 +178,39 @@ def test_runtime_rejects_health_from_an_unmanaged_api_process(
     script = repository / "infrastructure" / "scripts" / "start-local-release.sh"
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\n", encoding="utf-8")
-    runtime = RuntimeManager(
-        AppPaths(repository=repository, data=tmp_path / "data"), MacOSAdapter()
+    paths = AppPaths(repository=repository, data=tmp_path / "data")
+    paths.config.mkdir(parents=True)
+    (paths.config / "model.json").write_text(
+        json.dumps(
+            {
+                "model_id": DEFAULT_MODEL_ID,
+                "path": str(tmp_path / "qwen.gguf"),
+                "quantization": "Q3_K_M",
+                "context_tokens": 8192,
+                "context_source": "test",
+            }
+        ),
+        encoding="utf-8",
     )
+
+    class TestPlatform:
+        @staticmethod
+        def hardware() -> object:
+            return type(
+                "Hardware",
+                (),
+                {
+                    "memory_gb": 16.0,
+                    "unified_memory_gb": 16.0,
+                    "available_memory_gb": 16.0,
+                },
+            )()
+
+        @staticmethod
+        def open_url(_url: str) -> None:
+            return None
+
+    runtime = RuntimeManager(paths, TestPlatform())  # type: ignore[arg-type]
     statuses = (
         ServiceStatus("database", True, "healthy"),
         ServiceStatus("llm", True, "pid 10"),
@@ -814,6 +844,7 @@ def test_configuration_preserves_existing_values_and_fills_missing_defaults(
     assert "replace-with-a-unique-local-password" not in values
     assert f"KNEMORA_DATABASE_URL=sqlite+pysqlite:///{paths.database}" in values
     assert "KNEMORA_KNOWLEDGE_COMPILATION_MAX_OUTPUT_TOKENS=2048" in values
+    assert "KNEMORA_KNOWLEDGE_COMPILATION_TIMEOUT_SECONDS=300" in values
     assert "POSTGRES_" not in values
 
 

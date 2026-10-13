@@ -6,10 +6,13 @@ arm64/Metal payload beneath `KNEMORA_HOME`, verifies its provenance/capabilities
 uses the centralized model registry. Homebrew and an arbitrary PATH executable are never implicit
 runtime choices. The default stable ID `qwen3-8b-q3-k-m` resolves to
 `ISTA-DASLab/Qwen3-8B-GGUF-GSQ/qwen3-8b-Q3_K_M.gguf` with its published full SHA-256. The
-8192-token, single-slot runtime profile fits the primary 16 GB unified-memory target while leaving
-headroom for the API, UI, database, and operating system. The former 27B model remains selectable
-as `qwen3.8-27b-iq2-s`; it is no longer the default. Advanced environment overrides remain
-available.
+8,192-token, single-slot runtime profile is the full-context target on the primary 16 GB
+unified-memory host. Admission remains dependent on current safe memory. Each start tries that
+automatic profile first and, when necessary, may admit the supported 4,096-token fallback; if even
+the fallback is unsafe, startup is refused. Reduced context can truncate broad or multi-step answers
+sooner and is not an equivalent-quality mode. Explicit per-model or environment overrides are never
+silently lowered. The former 27B model remains selectable as `qwen3.8-27b-iq2-s`; it is no longer the
+default.
 
 Resolution precedence is a validated absolute `LLAMA_SERVER_BIN` operator override, the verified
 active managed installation, then a validated explicitly configured legacy `LLAMA_CPP_DIR` source

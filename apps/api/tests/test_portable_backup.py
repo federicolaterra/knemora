@@ -33,6 +33,7 @@ from app.knowledge.types import (
     WikiRelationship,
 )
 from knemora_bootstrap.cli import _parser
+from knemora_bootstrap.cli import main as cli_main
 from knemora_bootstrap.configuration import (
     AppPaths,
     default_backup_path,
@@ -222,6 +223,11 @@ def _populate_installation(paths: AppPaths, *, email: str, marker: str) -> Setti
                 "quantization": "Q3_K_M",
                 "context_tokens": 8192,
                 "sha256": "b" * 64,
+                "previous_selection": {
+                    "model_id": "older-model",
+                    "path": str(paths.models / "older.gguf"),
+                    "context_tokens": 4096,
+                },
             }
         ),
         encoding="utf-8",
@@ -310,10 +316,13 @@ def test_full_backup_is_portable_complete_and_excludes_secrets_and_models(
         assert "datasets/trend.json" in names
         assert "config/model-selection.json" in names
         assert "config/models.json" in names
+        assert "knowledge/.knemora/graph-index.json" not in names
+        assert not any(name.startswith("knowledge/.knemora/search-index/") for name in names)
         assert not any(name.endswith(".gguf") or name.endswith(".env") for name in names)
         selection = json.loads(archive.read("config/model-selection.json"))
         registry = json.loads(archive.read("config/models.json"))
         assert "path" not in selection
+        assert "path" not in selection["previous_selection"]
         assert registry["models"][0]["local_path"] == ""
 
 
@@ -431,6 +440,34 @@ def test_full_restore_replaces_existing_installation_and_keeps_recovery_archive(
     assert result.recovery_archive.is_file()
     assert result.archive.is_file()
     assert "knowledge" in result.restored_roots
+    assert not list(target_paths.database.parent.glob(".knemora.db.restore-*"))
+
+
+def test_restore_cli_identifies_restored_credentials_as_authoritative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source_paths = AppPaths(repository=tmp_path / "source-repo", data=tmp_path / "source-home")
+    source_settings = _populate_installation(
+        source_paths, email="portable@example.test", marker="portable"
+    )
+    backups = tmp_path / "backups"
+    backup = create_backup(backups, "full", source_settings, paths=source_paths)
+    target_paths = AppPaths(repository=tmp_path / "target-repo", data=tmp_path / "target-home")
+    target_settings = _populate_installation(
+        target_paths, email="destination@example.test", marker="destination"
+    )
+    monkeypatch.setattr(AppPaths, "discover", classmethod(lambda cls: target_paths))
+    monkeypatch.setattr("knemora_bootstrap.cli._backup_settings", lambda paths: target_settings)
+    monkeypatch.setattr("knemora_bootstrap.cli.read_backup_path", lambda paths: backups)
+    monkeypatch.setattr("knemora_bootstrap.cli._runtime_processes_active", lambda runtime: False)
+
+    assert cli_main(["--yes", "--non-interactive", "restore", str(backup.archive)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Restored accounts and password hashes are authoritative" in output
+    assert "destination setup password is no longer authoritative" in output
 
 
 def test_full_restore_into_fresh_setup_preserves_unicode_and_application_flow(

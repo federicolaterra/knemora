@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, func, select
@@ -16,13 +17,15 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import Settings
 from app.db.base import Base
-from app.db.models import KnowledgeCompilationJob, WikiChange
+from app.db.models import KnowledgeCompilationJob, SourceRecord, WikiChange
 from app.ingestion.service import IngestionService
 from app.knowledge.compiler import SYSTEM_PROMPT, KnowledgeCompiler
+from app.knowledge.errors import InvalidKnowledgeProposalError
 from app.knowledge.store import WikiStore
 from app.knowledge.types import (
     ClaimClassification,
     ClaimStatus,
+    KnowledgeProposal,
     PageKind,
     ProvenanceRef,
     WikiClaim,
@@ -38,6 +41,7 @@ from app.llm import (
     LLMCapabilities,
     LLMHealth,
 )
+from app.llm.errors import LLMTimeoutError
 from app.main import create_app
 
 FIXTURES = Path(__file__).parent / "fixtures" / "knowledge"
@@ -80,10 +84,30 @@ class ProposalProvider:
 
 
 class TruncatingProposalProvider(ProposalProvider):
+    def __init__(self, *outputs: dict[str, object] | str) -> None:
+        super().__init__(*outputs)
+        self.simulated_durations: list[float] = []
+
+    @property
+    def capabilities(self) -> LLMCapabilities:
+        return LLMCapabilities(
+            streaming=True,
+            structured_output=True,
+            cancellation=True,
+            max_context_tokens=8192,
+        )
+
     async def chat(self, request: ChatRequest) -> ChatResponse:
         self.requests.append(request)
         if not self.outputs:
             raise AssertionError("The compiler made an unexpected model call.")
+        # Deterministically model the measured Qwen floor: 8.7 seconds of prompt work plus
+        # generation at 18.6 tokens/second. The former 180-second shared deadline would reject the
+        # 4,096-token retry; the compilation-specific deadline must contain it without sleeping.
+        simulated_duration = 8.7 + request.max_tokens / 18.6
+        self.simulated_durations.append(simulated_duration)
+        if request.timeout_seconds is not None and simulated_duration >= request.timeout_seconds:
+            raise LLMTimeoutError("simulated bounded request timeout")
         truncated = len(self.requests) == 1
         completion_tokens = request.max_tokens if truncated else 400
         return ChatResponse(
@@ -96,6 +120,50 @@ class TruncatingProposalProvider(ProposalProvider):
                 total_tokens=512 + completion_tokens,
             ),
         )
+
+
+class TimeoutThenProposalProvider(ProposalProvider):
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        if not self.requests:
+            self.requests.append(request)
+            raise LLMTimeoutError("simulated bounded request timeout")
+        return await super().chat(request)
+
+
+class AlwaysTruncatingProposalProvider(ProposalProvider):
+    @property
+    def capabilities(self) -> LLMCapabilities:
+        return LLMCapabilities(
+            streaming=True,
+            structured_output=True,
+            cancellation=True,
+            max_context_tokens=8192,
+        )
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        return ChatResponse(
+            message=ChatMessage(role="assistant", content='{"pages":['),
+            model="fake-knowledge",
+            finish_reason="length",
+            usage=ChatUsage(
+                prompt_tokens=512,
+                completion_tokens=request.max_tokens,
+                total_tokens=512 + request.max_tokens,
+            ),
+        )
+
+
+class BlockingProposalProvider(ProposalProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("The cancelled compilation unexpectedly resumed.")
 
 
 def build_app(tmp_path: Path, provider: ProposalProvider) -> FastAPI:
@@ -491,6 +559,11 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
                 "project-aurora.md",
                 b"Project Aurora releases on Friday at 14:00 UTC.",
             )
+            wiki_before_rejection = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
             uploaded = await client.post(
                 "/api/v1/documents",
                 files={
@@ -505,6 +578,11 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
             version_id = uploaded.json()["document_version_id"]
             rejected = await client.post(f"/api/v1/document-versions/{version_id}/compile")
             aurora_after_rejection = await client.get("/api/v1/wiki/pages/Project%20Aurora")
+            wiki_after_rejection = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
             retried = await client.post(f"/api/v1/document-versions/{version_id}/compile")
             local_graph = await client.get(
                 "/api/v1/wiki/graph",
@@ -523,22 +601,13 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
         assert {claim["text"] for claim in aurora_after_rejection.json()["claims"]} == {
             "Project Aurora releases on Friday at 14:00 UTC."
         }
+        assert wiki_after_rejection == wiki_before_rejection
 
         request_payload = json.loads(
             provider.requests[1].messages[1].content.removeprefix("UNTRUSTED_SOURCE_JSON\n")
         )
         assert "existing_wiki_pages" not in request_payload
-        assert request_payload["existing_page_identities"] == [
-            {
-                "aliases": [],
-                "id": aurora_after_rejection.json()["id"],
-                "title": "Project Aurora",
-                "type": "topic",
-            }
-        ]
-        assert all(
-            "claims" not in identity for identity in request_payload["existing_page_identities"]
-        )
+        assert request_payload["existing_page_identities"] == []
 
         retried_job = retried.json()
         assert retried_job["status"] == "COMPLETED"
@@ -554,6 +623,79 @@ def test_compilation_blocks_unrelated_existing_pages_and_builds_explicit_skill_l
         }
         assert len(graph["edges"]) == 3
         assert all("uses" in edge["relations"] for edge in graph["edges"])
+
+    asyncio.run(exercise())
+
+
+def test_reprocess_preserves_source_record_identity_and_forces_a_new_compilation_attempt(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        provider = ProposalProvider(acme_proposal(), acme_proposal())
+        app = build_app(tmp_path, provider)
+        transport = ASGITransport(app=app)
+        source = b"Acme Corporation is headquartered in Valletta and uses Cold Chain."
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            uploaded = await client.post(
+                "/api/v1/documents",
+                files={"file": ("acme.md", source, "text/markdown")},
+            )
+            assert uploaded.status_code == 201, uploaded.text
+            body = uploaded.json()
+            version_id = uuid.UUID(body["document_version_id"])
+            first = await client.post(f"/api/v1/document-versions/{version_id}/compile")
+            assert first.status_code == 200, first.text
+            assert first.json()["status"] == "COMPLETED"
+            wiki_before_reprocess = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
+
+            with Session(app.state.engine) as session:
+                before_ids = tuple(
+                    session.scalars(
+                        select(SourceRecord.id)
+                        .where(SourceRecord.document_version_id == version_id)
+                        .order_by(SourceRecord.ordinal)
+                    )
+                )
+
+            reprocessed = await client.post(
+                f"/api/v1/ingestion-jobs/{body['ingestion_job_id']}/reprocess"
+            )
+            original = await client.get(f"/api/v1/document-versions/{version_id}/original")
+            second = await client.post(f"/api/v1/document-versions/{version_id}/compile")
+
+        assert reprocessed.status_code == 200, reprocessed.text
+        assert reprocessed.json()["status"] == "READY_FOR_COMPILATION"
+        assert original.content == source
+        assert second.status_code == 200, second.text
+        assert second.json()["status"] == "COMPLETED"
+        assert second.json()["attempt_count"] == 2
+        assert len(provider.requests) == 2
+        with Session(app.state.engine) as session:
+            after_ids = tuple(
+                session.scalars(
+                    select(SourceRecord.id)
+                    .where(SourceRecord.document_version_id == version_id)
+                    .order_by(SourceRecord.ordinal)
+                )
+            )
+            compilation = session.scalar(
+                select(KnowledgeCompilationJob).where(
+                    KnowledgeCompilationJob.document_version_id == version_id
+                )
+            )
+            assert compilation is not None
+            assert compilation.status == "COMPLETED"
+        assert after_ids == before_ids
+        wiki_after_reprocess = {
+            path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+            for path in app.state.settings.knowledge_path.rglob("*")
+            if path.is_file()
+        }
+        assert wiki_after_reprocess == wiki_before_reprocess
 
     asyncio.run(exercise())
 
@@ -668,7 +810,120 @@ def test_truncated_structured_output_retries_with_larger_budget(tmp_path: Path) 
             status = compiled.status
 
         assert status == "COMPLETED"
-        assert [request.max_tokens for request in provider.requests] == [2048, 3328]
+        assert [request.max_tokens for request in provider.requests] == [2048, 4096]
+        assert [request.timeout_seconds for request in provider.requests] == [300.0, 300.0]
+        assert provider.simulated_durations[1] > 180
+        assert provider.simulated_durations[1] < 300
+
+    asyncio.run(exercise())
+
+
+def test_timed_out_compilation_is_truthful_atomic_and_retryable(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        provider = TimeoutThenProposalProvider(acme_proposal())
+        app = build_app(tmp_path, provider)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            uploaded = await client.post(
+                "/api/v1/documents",
+                files={
+                    "file": (
+                        "acme-profile.md",
+                        (FIXTURES / "acme-profile.md").read_bytes(),
+                        "text/markdown",
+                    )
+                },
+            )
+            assert uploaded.status_code == 201
+            version_id = uploaded.json()["document_version_id"]
+
+            failed = await client.post(f"/api/v1/document-versions/{version_id}/compile")
+            assert failed.status_code == 200
+            assert failed.json()["status"] == "FAILED"
+            assert failed.json()["attempt_count"] == 1
+            assert failed.json()["last_completed_stage"] is None
+            assert failed.json()["error"] == (
+                "Knowledge compilation timed out while waiting for the local model. "
+                "No knowledge changes were applied; retry compilation when the model is ready."
+            )
+            assert WikiStore(app.state.settings.knowledge_path).list_pages() == ()
+
+            retried = await client.post(f"/api/v1/document-versions/{version_id}/compile")
+            assert retried.status_code == 200
+            assert retried.json()["status"] == "COMPLETED"
+            assert retried.json()["attempt_count"] == 2
+            assert len(WikiStore(app.state.settings.knowledge_path).list_pages()) == 2
+
+    asyncio.run(exercise())
+
+
+def test_second_truncated_structured_response_fails_after_one_retry(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        provider = AlwaysTruncatingProposalProvider()
+        app = build_app(tmp_path, provider)
+        settings = app.state.settings
+        with Session(app.state.engine) as session:
+            ingestion = IngestionService(session=session, settings=settings)
+            owner = ingestion.get_or_create_local_user()
+            source = ingestion.ingest(
+                owner=owner,
+                filename="acme-profile.md",
+                declared_content_type="text/markdown",
+                data=(FIXTURES / "acme-profile.md").read_bytes(),
+            )
+            failed = await KnowledgeCompiler(
+                session=session, settings=settings, provider=provider
+            ).compile(owner_id=owner.id, document_version_id=source.version.id)
+
+        assert failed.status == "FAILED"
+        assert failed.error == (
+            "Local model output exceeded the structured knowledge proposal token budget."
+        )
+        assert [request.max_tokens for request in provider.requests] == [2048, 4096]
+        assert WikiStore(settings.knowledge_path).list_pages() == ()
+
+    asyncio.run(exercise())
+
+
+def test_cancelled_compilation_records_retryable_failure_without_wiki_changes(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        provider = BlockingProposalProvider()
+        app = build_app(tmp_path, provider)
+        settings = app.state.settings
+        with Session(app.state.engine) as session:
+            ingestion = IngestionService(session=session, settings=settings)
+            owner = ingestion.get_or_create_local_user()
+            source = ingestion.ingest(
+                owner=owner,
+                filename="acme-profile.md",
+                declared_content_type="text/markdown",
+                data=(FIXTURES / "acme-profile.md").read_bytes(),
+            )
+            compiler = KnowledgeCompiler(session=session, settings=settings, provider=provider)
+            task = asyncio.create_task(
+                compiler.compile(owner_id=owner.id, document_version_id=source.version.id)
+            )
+            await provider.started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            session.expire_all()
+            failed = session.scalar(
+                select(KnowledgeCompilationJob).where(
+                    KnowledgeCompilationJob.document_version_id == source.version.id
+                )
+            )
+            assert failed is not None
+            assert failed.status == "FAILED"
+            assert failed.error == (
+                "Knowledge compilation was cancelled while waiting for the local model. "
+                "No knowledge changes were applied; retry compilation when ready."
+            )
+            assert failed.last_completed_stage is None
+            assert WikiStore(settings.knowledge_path).list_pages() == ()
 
     asyncio.run(exercise())
 
@@ -747,6 +1002,21 @@ def fake_page(title: str, kind: PageKind = PageKind.CONCEPT) -> WikiPage:
             ),
         ),
     )
+
+
+def test_existing_page_authorization_is_bound_to_each_cited_record() -> None:
+    existing = fake_page("Project Aurora")
+    proposal = KnowledgeProposal.model_validate(project_aurora_proposal())
+
+    with pytest.raises(InvalidKnowledgeProposalError, match="Project Aurora"):
+        KnowledgeCompiler._validate_existing_page_grounding(
+            proposal,
+            record_tokens={
+                1: ("unrelated", "garden", "schedule"),
+                2: ("project", "aurora", "appears", "only", "here"),
+            },
+            existing_pages=(existing,),
+        )
 
 
 def test_typed_wiki_operations_and_lint_detect_broken_links_and_orphans(

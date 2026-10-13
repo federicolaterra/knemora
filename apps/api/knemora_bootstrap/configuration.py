@@ -7,8 +7,19 @@ import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from knemora_bootstrap.model_context import ContextPlan, ModelContextError
 from knemora_bootstrap.models import ModelSpec
+
+MANAGED_EFFECTIVE_CONTEXT_ORIGIN = "managed-effective"
+
+
+@dataclass(frozen=True)
+class ContextPreference:
+    tokens: int
+    source: str
+    explicit: bool
 
 
 @dataclass(frozen=True)
@@ -167,6 +178,7 @@ def ensure_repository_env(paths: AppPaths) -> Path:
         "KNEMORA_SOURCE_STORE_PATH": str(paths.sources),
         "KNEMORA_KNOWLEDGE_PATH": str(paths.wiki),
         "KNEMORA_KNOWLEDGE_COMPILATION_MAX_OUTPUT_TOKENS": "2048",
+        "KNEMORA_KNOWLEDGE_COMPILATION_TIMEOUT_SECONDS": "300",
     }
     missing = [(key, value) for key, value in defaults.items() if key not in existing]
     if not missing:
@@ -180,32 +192,184 @@ def ensure_repository_env(paths: AppPaths) -> Path:
     return target
 
 
-def write_model_selection(paths: AppPaths, model: ModelSpec, model_path: Path) -> Path:
+def _read_model_selection(paths: AppPaths) -> dict[str, Any]:
+    try:
+        payload = json.loads((paths.config / "model.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_model_selection(
+    paths: AppPaths,
+    model: ModelSpec,
+    model_path: Path,
+    *,
+    plan: ContextPlan,
+    explicit_context_tokens: int | None = None,
+) -> Path:
     """Update only Knemora-owned runtime selection metadata."""
 
     paths.config.mkdir(parents=True, exist_ok=True)
     target = paths.config / "model.json"
     temporary = target.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(
-            {
-                "model_id": model.id,
-                "display_name": model.display_name,
-                "provider": model.provider,
-                "path": str(model_path),
-                "quantization": model.quantization,
-                "context_tokens": model.context_tokens,
-                "sha256": model.sha256,
-            },
-            indent=2,
-            sort_keys=True,
+    existing = _read_model_selection(paths)
+    overrides = existing.get("context_overrides", {})
+    if not isinstance(overrides, dict):
+        overrides = {}
+    overrides = {
+        str(key): int(value)
+        for key, value in overrides.items()
+        if isinstance(key, str) and isinstance(value, int)
+    }
+    if explicit_context_tokens is not None:
+        overrides[model.id] = explicit_context_tokens
+    previous = existing.get("previous_selection")
+    selection_changed = any(
+        (
+            existing.get("model_id") != model.id,
+            existing.get("path") != str(model_path),
+            existing.get("context_tokens") != plan.effective_context_tokens,
         )
-        + "\n",
+    )
+    if (
+        existing.get("model_id")
+        and selection_changed
+        and not (isinstance(previous, dict) and previous)
+    ):
+        previous = {
+            key: value
+            for key, value in existing.items()
+            if key not in {"previous_selection", "context_overrides"}
+        }
+    payload = {
+        "model_id": model.id,
+        "display_name": model.display_name,
+        "provider": model.provider,
+        "path": str(model_path),
+        "quantization": model.quantization,
+        "context_tokens": plan.effective_context_tokens,
+        "advertised_context_tokens": plan.advertised_context_tokens,
+        "configured_context_tokens": plan.configured_context_tokens,
+        "context_mode": "explicit" if plan.explicit else "automatic",
+        "context_source": plan.source,
+        "context_reason": plan.reason,
+        "estimated_memory_bytes": plan.memory.total_bytes,
+        "safe_memory_budget_bytes": plan.memory.safe_budget_bytes,
+        "memory_estimate_uncertainty": plan.memory.uncertainty,
+        "sha256": model.sha256,
+        "context_overrides": overrides,
+    }
+    if isinstance(previous, dict) and previous:
+        payload["previous_selection"] = previous
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     temporary.chmod(0o600)
     temporary.replace(target)
     return target
+
+
+def context_override_for(paths: AppPaths, model_id: str) -> int | None:
+    overrides = _read_model_selection(paths).get("context_overrides", {})
+    if not isinstance(overrides, dict):
+        return None
+    value = overrides.get(model_id)
+    return value if isinstance(value, int) else None
+
+
+def resolve_context_preference(
+    paths: AppPaths,
+    model: ModelSpec,
+    *,
+    cli_context_tokens: int | None = None,
+) -> ContextPreference:
+    """Resolve user intent without mistaking a managed effective value for an override."""
+
+    if cli_context_tokens is not None:
+        return ContextPreference(
+            cli_context_tokens,
+            "explicit setup --context-tokens override",
+            True,
+        )
+
+    persisted_context = context_override_for(paths, model.id)
+    if persisted_context is not None:
+        return ContextPreference(
+            persisted_context,
+            "persisted per-model user override",
+            True,
+        )
+
+    repository_environment = read_env(paths.repository / ".env")
+    raw_environment_context = repository_environment.get("KNEMORA_LLM_CONTEXT_TOKENS")
+    if raw_environment_context is None and (
+        os.environ.get("KNEMORA_LLM_CONTEXT_ORIGIN") != MANAGED_EFFECTIVE_CONTEXT_ORIGIN
+    ):
+        raw_environment_context = os.environ.get("KNEMORA_LLM_CONTEXT_TOKENS")
+    if raw_environment_context is not None:
+        try:
+            environment_context = int(raw_environment_context)
+        except ValueError as exc:
+            raise ModelContextError(
+                "KNEMORA_LLM_CONTEXT_TOKENS must be a whole number of tokens."
+            ) from exc
+        return ContextPreference(
+            environment_context,
+            "KNEMORA_LLM_CONTEXT_TOKENS environment override",
+            True,
+        )
+
+    return ContextPreference(
+        model.context_tokens,
+        "curated model profile" if not model.is_user_import else "GGUF-derived safe profile",
+        False,
+    )
+
+
+def rollback_model_selection(paths: AppPaths) -> bool:
+    """Restore the prior selection after a failed runtime start, if one was recorded."""
+
+    current = _read_model_selection(paths)
+    previous = current.get("previous_selection")
+    if not isinstance(previous, dict) or not previous:
+        return False
+    previous = dict(previous)
+    previous["context_overrides"] = current.get("context_overrides", {})
+    target = paths.config / "model.json"
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(previous, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(target)
+    state_path = paths.config / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        state = None
+    if isinstance(state, dict) and isinstance(previous.get("model_id"), str):
+        state["model_id"] = previous["model_id"]
+        state_temporary = state_path.with_suffix(".tmp")
+        state_temporary.write_text(
+            json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        state_temporary.chmod(0o600)
+        state_temporary.replace(state_path)
+    return True
+
+
+def confirm_model_selection(paths: AppPaths) -> None:
+    """Clear one-shot rollback metadata after the selected model is healthy."""
+
+    current = _read_model_selection(paths)
+    if "previous_selection" not in current:
+        return
+    current.pop("previous_selection", None)
+    target = paths.config / "model.json"
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(target)
 
 
 def runtime_environment(
@@ -226,6 +390,8 @@ def runtime_environment(
                 "KNEMORA_LLM_MODEL": str(model["model_id"]),
                 "KNEMORA_LLM_QUANTIZATION": str(model["quantization"]),
                 "KNEMORA_LLM_CONTEXT_TOKENS": str(model["context_tokens"]),
+                "KNEMORA_LLM_CONTEXT_ORIGIN": MANAGED_EFFECTIVE_CONTEXT_ORIGIN,
+                "KNEMORA_LLM_CONTEXT_SOURCE": str(model.get("context_source", "legacy selection")),
             }
         )
     values["KNEMORA_RUNTIME_DIR"] = str(paths.runtime)
@@ -276,11 +442,13 @@ def update_repository_database_url(paths: AppPaths, database_url: str) -> None:
 
 def mark_setup_complete(paths: AppPaths, model: ModelSpec) -> None:
     state = paths.config / "state.json"
-    state.write_text(
+    temporary = state.with_suffix(".tmp")
+    temporary.write_text(
         json.dumps({"setup_complete": True, "model_id": model.id}, indent=2) + "\n",
         encoding="utf-8",
     )
-    state.chmod(0o600)
+    temporary.chmod(0o600)
+    temporary.replace(state)
 
 
 def setup_is_complete(paths: AppPaths) -> bool:
