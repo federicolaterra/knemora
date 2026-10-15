@@ -1,10 +1,21 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/knemora-logo-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/knemora-logo-light.png">
-  <img src="docs/assets/knemora-logo-dark.png" alt="Knemora" width="420">
-</picture>
+<p align="center">
+  <a href="https://knemora.space#gh-dark-mode-only">
+    <img
+      src="docs/assets/knemora-logo-light.png#gh-dark-mode-only"
+      alt="Knemora"
+      width="420"
+    >
+  </a>
+  <a href="https://knemora.space#gh-light-mode-only">
+    <img
+      src="docs/assets/knemora-logo-dark.png#gh-light-mode-only"
+      alt="Knemora"
+      width="420"
+    >
+  </a>
+</p>
 
 ### Open-source, Local-first AI (SI) Second Brain
 
