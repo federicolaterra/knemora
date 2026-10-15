@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/knemora-logo-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/assets/knemora-logo-light.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/knemora-logo-light.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/knemora-logo-dark.png">
   <img src="docs/assets/knemora-logo-dark.png" alt="Knemora" width="420">
 </picture>
 
