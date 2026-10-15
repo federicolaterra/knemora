@@ -1,9 +1,9 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/knemora-logo-white.png">
-  <source media="(prefers-color-scheme: light)" srcset="apps/web/public/knemora-logo.svg">
-  <img src="docs/assets/knemora-logo-white.png" alt="Knemora" width="420">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/knemora-logo-light.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/knemora-logo-dark.png">
+  <img src="docs/assets/knemora-logo-dark.png" alt="Knemora" width="420">
 </picture>
 
 ### Open-source, Local-first AI (SI) Second Brain
