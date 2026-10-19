@@ -6,6 +6,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator
 from decimal import Decimal, DivisionByZero, InvalidOperation
+from typing import Literal
 
 from google.adk.agents._streaming_mode import StreamingMode
 from google.adk.agents.run_config import RunConfig
@@ -22,6 +23,7 @@ from app.repositories.chat import ChatRepository
 from knowledge_agent.agent import APP_NAME, create_adk_app, strip_hidden_reasoning
 from knowledge_agent.tools import create_agent_tools
 
+ResponseMode = Literal["wiki", "direct"]
 _DECIMAL_PATTERN = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
 _NUMERIC_ANSWER = re.compile(rf"^\s*({_DECIMAL_PATTERN})\s*[.!]?\s*$")
 _EMPHASIZED_NUMERIC_ANSWER = re.compile(rf"(?:\*\*|__)\s*({_DECIMAL_PATTERN})\s*(?:\*\*|__)")
@@ -155,7 +157,12 @@ class ChatService:
         self._max_output_tokens = max_output_tokens
 
     async def stream_reply(
-        self, *, conversation_id: uuid.UUID, user_id: uuid.UUID, content: str
+        self,
+        *,
+        conversation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str,
+        response_mode: ResponseMode = "wiki",
     ) -> AsyncIterator[str]:
         conversation = self._repository.get_conversation(conversation_id, user_id=user_id)
         history = self._repository.list_messages(conversation_id)
@@ -186,7 +193,10 @@ class ChatService:
             app_name=APP_NAME,
             user_id=str(user_id),
             session_id=adk_session_id,
-            state={"conversation_id": str(conversation_id)},
+            state={
+                "conversation_id": str(conversation_id),
+                "response_mode": response_mode,
+            },
         )
         await _replay_history(session_service, session, prior)
         runner = Runner(
@@ -194,7 +204,8 @@ class ChatService:
                 self._provider,
                 model_name=self._model_name,
                 max_output_tokens=self._max_output_tokens,
-                tools=self._tools,
+                tools=self._tools if response_mode == "wiki" else (),
+                response_mode=response_mode,
             ),
             session_service=session_service,
         )
@@ -233,11 +244,21 @@ class ChatService:
         )
         self._repository.commit()
 
-    async def reply(self, *, conversation_id: uuid.UUID, user_id: uuid.UUID, content: str) -> str:
+    async def reply(
+        self,
+        *,
+        conversation_id: uuid.UUID,
+        user_id: uuid.UUID,
+        content: str,
+        response_mode: ResponseMode = "wiki",
+    ) -> str:
         chunks = [
             chunk
             async for chunk in self.stream_reply(
-                conversation_id=conversation_id, user_id=user_id, content=content
+                conversation_id=conversation_id,
+                user_id=user_id,
+                content=content,
+                response_mode=response_mode,
             )
         ]
         return "".join(chunks)

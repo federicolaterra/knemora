@@ -33,6 +33,13 @@ grammar resolves simple two-operand expressions and operator-led fragments again
 uniquely emphasized preceding numeric answer; all other conversation continues through the
 existing ADK root agent.
 
+The chat API also accepts a per-turn `response_mode` of `wiki` or `direct`, defaulting to `wiki`.
+Wiki preserves the behavior above. Direct constructs an isolated invocation with no retrieval
+tools and independently suppresses tool schemas at the provider adapter, while retaining the same
+ADK root-agent → `LLMProvider` → llama.cpp path. Persisted history contains only native-role
+user/assistant text, not ADK tool responses. The mode is request-scoped and does not add a second
+conversation store or database schema.
+
 The current implementation keeps orchestration out of the launcher and makes the
 distribution/runtime/home boundaries explicit without moving core behavior into Node:
 

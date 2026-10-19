@@ -68,7 +68,7 @@ from app.security import (
     SecurityHeadersMiddleware,
     require_permission,
 )
-from app.services.chat import ChatService
+from app.services.chat import ChatService, ResponseMode
 from app.updates import create_update_router
 from knemora_bootstrap.configuration import AppPaths, configured_data_path
 from knemora_bootstrap.update import UpdateService
@@ -162,6 +162,7 @@ class RenameConversationRequest(BaseModel):
 
 class SendMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
+    response_mode: ResponseMode = "wiki"
 
 
 class MessageResponse(BaseModel):
@@ -718,6 +719,7 @@ def create_app(
             conversation_id=conversation.id,
             user_id=conversation.user_id,
             content=body.content,
+            response_mode=body.response_mode,
         )
         return MessageResponse(
             conversation_id=conversation.id,
@@ -759,6 +761,7 @@ def create_app(
                     conversation_id=conversation.id,
                     user_id=conversation.user_id,
                     content=body.content,
+                    response_mode=body.response_mode,
                 ):
                     yield _sse("message.delta", {"event_id": event_id, "delta": chunk})
                 yield _sse("message.completed", {"event_id": event_id})

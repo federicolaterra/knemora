@@ -8,6 +8,9 @@ and established interfaces.
 
 ### Added
 
+- Per-turn Wiki / Direct chat modes. Wiki remains the backwards-compatible default; Direct uses
+  the selected local model through the existing ADK/provider path with all retrieval tools and
+  schemas withheld.
 - Role-aware reconstruction of persisted chat history for multi-turn follow-ups, bounded recent-
   turn retention at both supported context sizes, and automatic response-language matching with
   explicit-language overrides.

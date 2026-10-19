@@ -22,7 +22,7 @@ import ChatResponseContent from "../components/ChatResponseContent.vue";
 import PageHeader from "../components/PageHeader.vue";
 import { useSystemStore } from "../stores/system";
 import { useWorkspaceStore } from "../stores/workspace";
-import type { Conversation, Message } from "../types";
+import type { Conversation, Message, ResponseMode } from "../types";
 import { groupMessagesByPromptDay, promptTimeLabel } from "../utils/chatDates";
 
 const route = useRoute();
@@ -51,13 +51,20 @@ const { textarea, input } = useTextareaAutosize({ styleProp: "height" });
 // The template resolves this ref by name; keep an explicit script read for static analysis.
 void textarea;
 const progress = ref("Understanding request…");
+const responseMode = ref<ResponseMode>("wiki");
+const modeHelp = computed(() =>
+  responseMode.value === "wiki"
+    ? "Wiki: answers grounded in your knowledge"
+    : "Direct: local AI without knowledge search",
+);
 let progressTimer: ReturnType<typeof setInterval> | undefined;
-const progressSteps = [
+const wikiProgressSteps = [
   "Understanding request…",
   "Searching company knowledge…",
   "Reviewing sources…",
   "Generating response…",
 ];
+const directProgressSteps = ["Generating answer…"];
 const demoPrompt =
   "Which gateway, owner, policy, and freeze day apply to ORBIT-LANTERN? Cite sources.";
 
@@ -89,7 +96,8 @@ async function loadConversation(id: string) {
   }
 }
 
-async function newConversation() {
+async function newConversation(resetMode = true) {
+  if (resetMode) responseMode.value = "wiki";
   const conversation = await api.createConversation();
   workspace.conversations = [conversation, ...workspace.conversations].slice(
     0,
@@ -186,7 +194,10 @@ async function confirmConversationDeletion() {
 
 async function send(content = input.value.trim()) {
   if (!content || loading.value) return;
-  if (!activeId.value) await newConversation();
+  if (!activeId.value) await newConversation(false);
+  const submittedMode = responseMode.value;
+  const progressSteps =
+    submittedMode === "wiki" ? wikiProgressSteps : directProgressSteps;
   lastPrompt.value = content;
   input.value = "";
   messages.value.push(
@@ -212,6 +223,7 @@ async function send(content = input.value.trim()) {
     await streamMessage(
       activeId.value,
       content,
+      submittedMode,
       controller.value.signal,
       (delta) => {
         target.content += delta;
@@ -266,9 +278,11 @@ onBeforeUnmount(() => {
 watch(
   () => route.params.id,
   (id) => {
-    if (typeof id === "string" && id !== activeId.value)
+    if (typeof id === "string" && id !== activeId.value) {
+      responseMode.value = "wiki";
       void loadConversation(id);
-    else if (!id) {
+    } else if (!id) {
+      responseMode.value = "wiki";
       activeId.value = "";
       messages.value = [];
       activeDetail.value = null;
@@ -298,7 +312,7 @@ watch(
           ><button
             type="button"
             class="button button-primary inline-flex [gap:8px] items-center justify-center [min-height:38px] [padding:0_15px] [border:1px_solid_transparent] rounded-action text-label font-bold no-underline [transition:0.16s_ease] text-white bg-brand [box-shadow:0_2px_7px_rgb(51_209_51_/_18%)] hover:text-white hover:bg-brand hover:[opacity:0.82] hover:[transform:translateY(-1px)]"
-            @click="newConversation"
+            @click="newConversation()"
           >
             <MessageSquarePlus :size="16" /> New conversation
           </button></template
@@ -441,39 +455,90 @@ watch(
         </div>
       </div>
       <form
-        class="composer [width:min(840px,_100%)] [margin:0_auto] [padding:7px] bg-surface [border:1px_solid_#cfd8d3] rounded-composer [box-shadow:0_5px_22px_rgb(35_57_49_/_8%)] [&_textarea]:[width:calc(100%_-_50px)] [&_textarea]:[max-height:150px] [&_textarea]:[min-height:70px] [&_textarea]:[padding:10px] [&_textarea]:[resize:none] [&_textarea]:[background:transparent] [&_textarea]:border-0 [&_textarea]:outline-none [&_textarea]:text-copy [&_textarea]:[line-height:1.5] [&_textarea]:[vertical-align:middle] [&_textarea:focus]:!shadow-none [&>p]:[clear:both] [&>p]:[margin:4px_8px_1px] [&>p]:[color:#87928e] [&>p]:text-caption"
+        class="composer grid [width:min(840px,_100%)] [margin:0_auto] [padding:7px] bg-surface [border:1px_solid_#cfd8d3] rounded-composer [box-shadow:0_5px_22px_rgb(35_57_49_/_8%)] [&_textarea]:min-w-0 [&_textarea]:flex-1 [&_textarea]:[max-height:150px] [&_textarea]:[min-height:70px] [&_textarea]:[padding:10px] [&_textarea]:[resize:none] [&_textarea]:[background:transparent] [&_textarea]:border-0 [&_textarea]:outline-none [&_textarea]:text-copy [&_textarea]:[line-height:1.5] [&_textarea]:[vertical-align:middle] [&_textarea:focus]:!shadow-none"
         @submit.prevent="send()"
       >
-        <textarea
-          ref="textarea"
-          v-model="input"
-          rows="1"
-          aria-label="Message"
-          placeholder="Ask your Second Brain…"
-          @keydown.enter.exact.prevent="send()"
-        ></textarea
-        ><button
-          v-if="loading"
-          type="button"
-          class="composer-send stop [float:right] grid place-items-center [width:36px] [height:36px] [margin:2px] text-white bg-brand border-0 rounded-action [&.stop]:[background:#9e4935]"
-          aria-label="Stop generating"
-          @click="stop"
+        <div class="flex min-w-0 items-start gap-1">
+          <textarea
+            ref="textarea"
+            v-model="input"
+            rows="1"
+            aria-label="Message"
+            placeholder="Ask your Second Brain…"
+            @keydown.enter.exact.prevent="send()"
+          ></textarea
+          ><button
+            v-if="loading"
+            type="button"
+            class="composer-send stop grid [width:36px] [height:36px] shrink-0 place-items-center [margin:2px] text-white bg-brand border-0 rounded-action [&.stop]:[background:#9e4935]"
+            aria-label="Stop generating"
+            @click="stop"
+          >
+            <Square :size="16" fill="currentColor" /></button
+          ><button
+            v-else
+            type="submit"
+            class="composer-send grid [width:36px] [height:36px] shrink-0 place-items-center [margin:2px] text-white bg-brand border-0 rounded-action"
+            :disabled="!input.trim()"
+            aria-label="Send message"
+          >
+            <Send :size="17" />
+          </button>
+        </div>
+        <div
+          class="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 pb-1"
         >
-          <Square :size="16" fill="currentColor" /></button
-        ><button
-          v-else
-          type="submit"
-          class="composer-send [float:right] grid place-items-center [width:36px] [height:36px] [margin:2px] text-white bg-brand border-0 rounded-action [&.stop]:[background:#9e4935]"
-          :disabled="!input.trim()"
-          aria-label="Send message"
-        >
-          <Send :size="17" />
-        </button>
-        <p>
-          Private local model · Verify important decisions against cited
-          originals
-        </p>
+          <fieldset
+            class="m-0 flex shrink-0 rounded-control border border-line bg-[#edf1ee] p-[2px]"
+            aria-label="Response mode"
+            :disabled="loading"
+          >
+            <legend class="sr-only">Response mode</legend>
+            <label
+              class="cursor-pointer"
+              title="Wiki: answers grounded in your knowledge"
+            >
+              <input
+                v-model="responseMode"
+                class="peer sr-only"
+                type="radio"
+                name="response-mode"
+                value="wiki"
+              />
+              <span
+                class="block rounded-[5px] px-2 py-1 [font-size:11px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                >Wiki</span
+              >
+            </label>
+            <label
+              class="cursor-pointer"
+              title="Direct: local AI without knowledge search"
+            >
+              <input
+                v-model="responseMode"
+                class="peer sr-only"
+                type="radio"
+                name="response-mode"
+                value="direct"
+              />
+              <span
+                class="block rounded-[5px] px-2 py-1 [font-size:11px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                >Direct</span
+              >
+            </label>
+          </fieldset>
+          <p
+            class="m-0 min-w-0 text-right [font-size:11px] text-muted mobile:text-left"
+          >
+            {{ modeHelp }}
+          </p>
+        </div>
       </form>
+      <p
+        class="[width:min(840px,_100%)] [margin:6px_auto_0] text-center [font-size:11px] text-muted"
+      >
+        AI responses may include mistakes.
+      </p>
     </div>
     <aside
       class="[padding:20px_13px] overflow-y-auto [background:#eef1ee] border-l border-line [&_nav]:grid [&_nav]:[gap:6px] tablet:hidden"
