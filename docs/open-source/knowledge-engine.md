@@ -8,6 +8,43 @@ Search combines structured identity, weighted BM25, backlinks, and bounded graph
 not require a vector database. Dataset calculations remain allow-listed and deterministic in
 Polars; the model may select or explain an operation but does not execute arbitrary code or SQL.
 
+## Relationship safelist
+
+The existing structured proposal call receives Knemora's bounded relationship taxonomy. Version 1
+covers family (including `sibling_of`, `parent_of`, `child_of`, `spouse_of`, and close kinship),
+professional (`works_at`, `employed_by`, `colleague_of`, `founder_of`, and `owner_of`), education,
+organization, project/technology, and geography relations. Known aliases are normalized to the
+canonical label. Existing Wiki files and legacy relationship labels remain readable and are not
+rewritten.
+
+A safelisted edge requires an exact source-record locator, two uniquely resolved page identities,
+and an explicit matching statement in the same source sentence. Knemora rejects or skips negated,
+hypothetical, quoted, ambiguous, self-referential, unresolved, or unsupported proposals and records
+a compilation warning instead. A bounded deterministic check can recover a relation omitted by the
+model only when the same explicit evidence and identity checks pass. Within one source record, a
+unique full-name introduction may support a later unambiguous first-name reference, and a nearby
+singular `he` or `she` may resolve only when the preceding person reference is unique. Ambiguous
+short names and pronouns produce content-free rejection diagnostics rather than guessed edges.
+Headings and special author markup are never required.
+
+Historical `colleague_of` evidence is retained as a relationship because it records that the
+professional connection existed; the source claim and provenance retain the past or former wording,
+and the edge does not assert that the people are current colleagues. The recovery pass never derives
+an edge from a filename, metadata topic, label, keyword alone, or simple co-occurrence. Friendship,
+acquaintance, and shared preferences are not mandatory structural relations. Symmetric relations are
+stored once in a stable direction; the graph remains a rebuildable projection of the Markdown Wiki.
+
+## Page classification
+
+The model proposes `ENTITY` for a distinct person, organization, place, product, or project;
+`CONCEPT` for an abstract principle, practice, method, or idea; `TOPIC` for a broader thematic
+subject; and `SYNTHESIS` only for supported cross-fact or cross-source synthesis. `DATASET` remains
+an application-created page for structured data. The backend validates the page-kind enum, retains
+the established kind of a resolved page, and preserves deterministic dataset creation. A page's
+`topics` metadata does not create a topic page or relationship, and the compiler does not create
+pages merely to fill kind categories. If evidence does not warrant a durable page, none should be
+proposed.
+
 ## Compilation timeout and model context
 
 Structured knowledge compilation uses a 2,048-token first attempt and at most one context-safe

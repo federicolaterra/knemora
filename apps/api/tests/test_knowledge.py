@@ -186,11 +186,14 @@ def build_app(tmp_path: Path, provider: ProposalProvider) -> FastAPI:
 
 
 async def upload_and_compile(
-    client: AsyncClient, filename: str, content: bytes
+    client: AsyncClient,
+    filename: str,
+    content: bytes,
+    content_type: str = "text/markdown",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     uploaded = await client.post(
         "/api/v1/documents",
-        files={"file": (filename, content, "text/markdown")},
+        files={"file": (filename, content, content_type)},
     )
     assert uploaded.status_code == 201, uploaded.text
     compiled = await client.post(
@@ -417,6 +420,89 @@ def federico_skills_proposal() -> dict[str, object]:
         for title in ("TypeScript", "JavaScript", "SQL")
     )
     return {"pages": pages, "warnings": []}
+
+
+def named_subjects_proposal(
+    *subjects: tuple[str, str, tuple[str, ...]],
+    relationships: dict[str, list[dict[str, object]]] | None = None,
+) -> dict[str, object]:
+    return {
+        "pages": [
+            {
+                "type": kind,
+                "title": title,
+                "aliases": list(aliases),
+                "topics": [],
+                "summary": f"Source-backed information about {title}.",
+                "claims": [
+                    {
+                        "key": "source_description",
+                        "text": f"The source explicitly discusses {title}.",
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    }
+                ],
+                "relationships": (relationships or {}).get(title, []),
+            }
+            for title, kind, aliases in subjects
+        ],
+        "warnings": [],
+    }
+
+
+def fabrizio_relationship_proposal(
+    colleague_text: str = "Fabrizio was a colleague of Federico La Terra.",
+) -> dict[str, object]:
+    return {
+        "pages": [
+            {
+                "type": "entity",
+                "title": "Fabrizio Bonaccorsi",
+                "aliases": [],
+                "topics": [],
+                "summary": "Fabrizio Bonaccorsi is an Italian web developer.",
+                "claims": [
+                    {
+                        "key": "occupation",
+                        "text": "Fabrizio Bonaccorsi is an Italian web developer.",
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    },
+                    {
+                        "key": "employment",
+                        "text": "Fabrizio Bonaccorsi works at ABC Company.",
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    },
+                    {
+                        "key": "professional_relationship",
+                        "text": colleague_text,
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    },
+                ],
+                # Qwen may retain both explicit facts as claims without proposing relationships.
+                "relationships": [],
+            },
+            {
+                "type": "entity",
+                "title": "ABC Company",
+                "aliases": [],
+                "topics": [],
+                "summary": "ABC Company employs Fabrizio Bonaccorsi.",
+                "claims": [
+                    {
+                        "key": "employee",
+                        "text": "Fabrizio Bonaccorsi works at ABC Company.",
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    }
+                ],
+                "relationships": [],
+            },
+        ],
+        "warnings": [],
+    }
 
 
 def test_related_sources_build_one_evolving_wiki_with_conflict_provenance(
@@ -1073,3 +1159,469 @@ def test_legacy_wiki_metadata_is_copied_without_deleting_original(tmp_path: Path
     assert store.internal_root == root / ".knemora"
     assert (store.internal_root / "state.json").read_text() == (legacy / "state.json").read_text()
     assert legacy.exists()
+
+
+@pytest.mark.parametrize(
+    ("source", "colleague_text"),
+    (
+        (
+            (
+                "FABRIZIO BONACCORSI BIO\n\n"
+                "Fabrizio Bonaccorsi is an Italian web developer who specialises in the PHP "
+                "programming language and the Magento framework.\n"
+                "He works at ABC Company and lives in Cesena with his family.\n\n"
+                "PROFESSIONAL RELATIONSHIP\n"
+                "Fabrizio was a colleague of Federico La Terra; they are also very good friends "
+                "who share a passion for eating sushi.\n"
+            ),
+            "Fabrizio was a colleague of Federico La Terra.",
+        ),
+        (
+            """Fabrizio Bonaccorsi is an Italian web developer.
+He works at ABC Company.
+Fabrizio was a colleague of Federico La Terra.
+""",
+            "Fabrizio was a colleague of Federico La Terra.",
+        ),
+        (
+            (
+                "  Fabrizio Bonaccorsi is an Italian web developer.  \n\n\n"
+                "He works at ABC Company.   \n\n"
+                "Fabrizio was a colleague of Federico La Terra.  \n"
+            ),
+            "Fabrizio was a colleague of Federico La Terra.",
+        ),
+        (
+            """Fabrizio Bonaccorsi is an Italian web developer.
+He works at ABC Company.
+Fabrizio is a colleague of Federico La Terra.
+""",
+            "Fabrizio is a colleague of Federico La Terra.",
+        ),
+        (
+            """Fabrizio Bonaccorsi is an Italian web developer.
+He works at ABC Company.
+Fabrizio is a former colleague of Federico La Terra.
+""",
+            "Fabrizio is a former colleague of Federico La Terra.",
+        ),
+    ),
+)
+def test_natural_prose_recovers_historical_colleague_and_pronoun_employment_edges(
+    tmp_path: Path, source: str, colleague_text: str
+) -> None:
+    async def exercise() -> None:
+        federico = named_subjects_proposal(("Federico La Terra", "entity", ()))
+        relationship_proposal = fabrizio_relationship_proposal(colleague_text)
+        provider = ProposalProvider(federico, relationship_proposal, relationship_proposal)
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "federico.md",
+                b"Federico La Terra is a software developer.",
+            )
+            federico_path = next(
+                path
+                for path in app.state.settings.knowledge_path.rglob("*.md")
+                if path.stem == "federico-la-terra"
+            )
+            federico_before = federico_path.read_bytes()
+            uploaded, compiled = await upload_and_compile(
+                client, "fabrizio.txt", source.encode(), "text/plain"
+            )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+            repeated = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+            wiki_before_reprocess = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
+            reprocessed = await client.post(
+                f"/api/v1/ingestion-jobs/{uploaded['ingestion_job_id']}/reprocess"
+            )
+            recompiled = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+
+        store = WikiStore(app.state.settings.knowledge_path)
+        fabrizio = store.read_page("Fabrizio Bonaccorsi")
+        federico_page = store.read_page("Federico La Terra")
+        abc = store.read_page("ABC Company")
+        relations = {
+            (page.id, relationship.relation, relationship.target_id)
+            for _, page in store.page_snapshot()
+            for relationship in page.relationships
+        }
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 2
+        assert relations == {
+            (fabrizio.id, "colleague_of", federico_page.id),
+            (fabrizio.id, "works_at", abc.id),
+        }
+        assert (
+            next(
+                claim.text for claim in fabrizio.claims if claim.key == "professional_relationship"
+            )
+            == colleague_text
+        )
+        assert federico_path.read_bytes() == federico_before
+        assert all(
+            relationship.relation not in {"friend_of", "likes_sushi"}
+            for _, page in store.page_snapshot()
+            for relationship in page.relationships
+        )
+        assert graph["total_edges"] == 2
+        graph_edges = {
+            (edge["source"], edge["target"]): set(edge["relations"]) for edge in graph["edges"]
+        }
+        assert set(graph_edges) == {
+            (fabrizio.id, abc.id),
+            (fabrizio.id, federico_page.id),
+        }
+        assert "works_at" in graph_edges[(fabrizio.id, abc.id)]
+        assert "colleague_of" in graph_edges[(fabrizio.id, federico_page.id)]
+        assert repeated.json()["id"] == compiled["id"]
+        assert reprocessed.status_code == 200
+        assert recompiled.json()["report"]["pages_created"] == []
+        assert recompiled.json()["report"]["pages_updated"] == []
+        wiki_after_reprocess = {
+            path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+            for path in app.state.settings.knowledge_path.rglob("*")
+            if path.is_file()
+        }
+        assert wiki_after_reprocess == wiki_before_reprocess
+        assert len(provider.requests) == 3
+        assert all(
+            private_name not in warning
+            for warning in compiled["report"]["warnings"]
+            for private_name in ("Fabrizio", "Federico", "ABC Company")
+        )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    (
+        "Giuseppe La Terra and Federico La Terra are siblings.",
+        (
+            "Family records explicitly state that Giuseppe La Terra is the brother of "
+            "Federico La Terra."
+        ),
+    ),
+)
+def test_explicit_sibling_prose_recovers_one_provenance_backed_edge_and_is_idempotent(
+    tmp_path: Path, sentence: str
+) -> None:
+    async def exercise() -> None:
+        federico = named_subjects_proposal(("Federico La Terra", "entity", ("Federico",)))
+        family = named_subjects_proposal(
+            ("Giuseppe La Terra", "entity", ("Giuseppe",)),
+            ("Federico La Terra", "entity", ("Federico",)),
+        )
+        provider = ProposalProvider(federico, family, family)
+        app = build_app(tmp_path, provider)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "federico.md",
+                b"Federico La Terra is a software developer.",
+            )
+            uploaded, compiled = await upload_and_compile(
+                client,
+                "family.md",
+                sentence.encode(),
+            )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+            repeated = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+            wiki_before_reprocess = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
+            reprocessed = await client.post(
+                f"/api/v1/ingestion-jobs/{uploaded['ingestion_job_id']}/reprocess"
+            )
+            recompiled = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 1
+        assert any(
+            "Relationship candidate accepted: type='sibling_of'" in warning
+            for warning in compiled["report"]["warnings"]
+        )
+        store = WikiStore(app.state.settings.knowledge_path)
+        all_relationships = [
+            (page.title, relationship)
+            for _, page in store.page_snapshot()
+            for relationship in page.relationships
+        ]
+        assert len(all_relationships) == 1
+        source_title, relationship = all_relationships[0]
+        assert source_title == "Federico La Terra"
+        assert relationship.relation == "sibling_of"
+        assert relationship.target_title == "Giuseppe La Terra"
+        assert len(relationship.provenance) == 1
+        assert relationship.provenance[0].document_version_id == uploaded["document_version_id"]
+        assert graph["total_edges"] == 1
+        assert "sibling_of" in graph["edges"][0]["relations"]
+        assert repeated.json()["id"] == compiled["id"]
+        assert reprocessed.status_code == 200
+        assert recompiled.json()["status"] == "COMPLETED"
+        assert recompiled.json()["report"]["pages_created"] == []
+        assert recompiled.json()["report"]["pages_updated"] == []
+        wiki_after_reprocess = {
+            path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+            for path in app.state.settings.knowledge_path.rglob("*")
+            if path.is_file()
+        }
+        assert wiki_after_reprocess == wiki_before_reprocess
+        assert len(provider.requests) == 3
+        assert "Relationship taxonomy v1" in provider.requests[1].messages[0].content
+        assert "TOPIC is a broader thematic knowledge subject" in (
+            provider.requests[1].messages[0].content
+        )
+
+    asyncio.run(exercise())
+
+
+def test_negated_hypothetical_quoted_ambiguous_and_cooccurring_kinship_create_no_edge(
+    tmp_path: Path,
+) -> None:
+    unsafe_sentences = (
+        "Giuseppe La Terra and Federico La Terra are not siblings.",
+        "If Giuseppe La Terra and Federico La Terra were siblings, they would share a parent.",
+        'The note quotes "Giuseppe La Terra and Federico La Terra are siblings."',
+        "Whether Giuseppe La Terra and Federico La Terra are siblings is unknown.",
+        "Giuseppe La Terra met Federico La Terra at a conference.",
+    )
+
+    async def exercise() -> None:
+        proposal = named_subjects_proposal(
+            ("Giuseppe La Terra", "entity", ("Giuseppe",)),
+            ("Federico La Terra", "entity", ("Federico",)),
+            relationships={
+                "Giuseppe La Terra": [
+                    {
+                        "relation": "sibling_of",
+                        "target_title": "Federico La Terra",
+                        "source_record_ordinals": [1],
+                    }
+                ]
+            },
+        )
+        provider = ProposalProvider(*(proposal for _ in unsafe_sentences))
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for index, sentence in enumerate(unsafe_sentences, start=1):
+                _, compiled = await upload_and_compile(
+                    client, f"unsafe-family-{index}.md", sentence.encode()
+                )
+                assert compiled["status"] == "COMPLETED"
+                assert compiled["report"]["links_created"] == 0
+                assert any(
+                    "Relationship candidate skipped: type='sibling_of'" in warning
+                    for warning in compiled["report"]["warnings"]
+                )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+
+        assert graph["total_edges"] == 0
+        assert all(
+            not page.relationships
+            for _, page in WikiStore(app.state.settings.knowledge_path).page_snapshot()
+        )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("source", "subjects", "reason"),
+    (
+        (
+            (
+                "Fabrizio Bonaccorsi and Fabrizio Rossi are web developers. "
+                "Fabrizio was a colleague of Federico La Terra."
+            ),
+            (
+                ("Fabrizio Bonaccorsi", "entity", ()),
+                ("Fabrizio Rossi", "entity", ()),
+            ),
+            "ambiguous_short_reference",
+        ),
+        (
+            "Fabrizio Bonaccorsi met Marco Bianchi. He works at ABC Company.",
+            (
+                ("Fabrizio Bonaccorsi", "entity", ()),
+                ("Marco Bianchi", "entity", ()),
+                ("ABC Company", "entity", ()),
+            ),
+            "unresolved_pronoun",
+        ),
+    ),
+)
+def test_ambiguous_coreferences_emit_diagnostic_without_fabricating_edges(
+    tmp_path: Path,
+    source: str,
+    subjects: tuple[tuple[str, str, tuple[str, ...]], ...],
+    reason: str,
+) -> None:
+    async def exercise() -> None:
+        provider = ProposalProvider(
+            named_subjects_proposal(("Federico La Terra", "entity", ())),
+            named_subjects_proposal(*subjects),
+        )
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "federico.md",
+                b"Federico La Terra is a software developer.",
+            )
+            _, compiled = await upload_and_compile(client, "ambiguous.md", source.encode())
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 0
+        assert any(f"reason='{reason}'" in warning for warning in compiled["report"]["warnings"])
+        assert graph["total_edges"] == 0
+        assert all(
+            not page.relationships
+            for _, page in WikiStore(app.state.settings.knowledge_path).page_snapshot()
+        )
+
+    asyncio.run(exercise())
+
+
+def test_safelist_recovers_directional_relations_resolves_aliases_and_skips_unresolved(
+    tmp_path: Path,
+) -> None:
+    subjects = (
+        ("Avery Morgan", "entity", ("Avery",)),
+        ("Acme Corporation", "entity", ("ACME",)),
+        ("University of Malta", "entity", ()),
+        ("Project Atlas", "entity", ("Atlas",)),
+        ("Python", "concept", ()),
+        ("Valletta", "entity", ()),
+        ("Unrelated Garden", "topic", ()),
+    )
+    relation_subjects = (
+        ("Avery Morgan", "entity", ("Avery",)),
+        ("ACME", "entity", ("Acme Corporation",)),
+        ("University of Malta", "entity", ()),
+        ("Project Atlas", "entity", ("Atlas",)),
+        ("Python", "concept", ()),
+        ("Valletta", "entity", ()),
+    )
+    explicit = (
+        "Avery Morgan founded ACME. Avery Morgan owns ACME. Avery Morgan works at ACME. "
+        "Avery Morgan studied at University of Malta. "
+        "Project Atlas was created by Avery Morgan. Avery Morgan uses Python. "
+        "Avery Morgan lives in Valletta."
+    )
+    model_relationships: dict[str, list[dict[str, object]]] = {
+        "Avery Morgan": [
+            {
+                "relation": "works_for",
+                "target_title": "ACME",
+                "source_record_ordinals": [1],
+            },
+            {
+                "relation": "works_at",
+                "target_title": "Missing Organization",
+                "source_record_ordinals": [1],
+            },
+        ]
+    }
+
+    async def exercise() -> None:
+        provider = ProposalProvider(
+            named_subjects_proposal(*subjects),
+            named_subjects_proposal(*relation_subjects, relationships=model_relationships),
+        )
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "subjects.md",
+                (
+                    b"Avery Morgan, Acme Corporation (ACME), University of Malta, Project Atlas, "
+                    b"Python, Valletta, and Unrelated Garden are named subjects."
+                ),
+            )
+            garden_path = next(
+                path
+                for path in app.state.settings.knowledge_path.rglob("*.md")
+                if path.stem == "unrelated-garden"
+            )
+            garden_before = garden_path.read_bytes()
+            _, compiled = await upload_and_compile(
+                client, "explicit-relations.md", explicit.encode()
+            )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 7
+        assert any(
+            "reason='unresolved_endpoint'" in warning for warning in compiled["report"]["warnings"]
+        )
+        store = WikiStore(app.state.settings.knowledge_path)
+        relations = {
+            (page.title, relationship.relation, relationship.target_title)
+            for _, page in store.page_snapshot()
+            for relationship in page.relationships
+        }
+        assert relations == {
+            ("Avery Morgan", "founder_of", "Acme Corporation"),
+            ("Avery Morgan", "lives_in", "Valletta"),
+            ("Avery Morgan", "owner_of", "Acme Corporation"),
+            ("Avery Morgan", "studied_at", "University of Malta"),
+            ("Avery Morgan", "uses_technology", "Python"),
+            ("Avery Morgan", "works_at", "Acme Corporation"),
+            ("Project Atlas", "created_by", "Avery Morgan"),
+        }
+        assert graph["total_edges"] == 5
+        assert garden_path.read_bytes() == garden_before
+
+    asyncio.run(exercise())
+
+
+def test_page_kind_guidance_preserves_distinct_entity_concept_and_topic_outputs(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        proposal = named_subjects_proposal(
+            ("Mira Chen", "entity", ()),
+            ("Least Privilege", "concept", ()),
+            ("Information Security", "topic", ()),
+        )
+        provider = ProposalProvider(proposal)
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            _, compiled = await upload_and_compile(
+                client,
+                "security.md",
+                (
+                    b"Mira Chen applies Least Privilege while documenting the broader "
+                    b"Information Security program."
+                ),
+            )
+            pages = (await client.get("/api/v1/wiki/pages")).json()
+
+        assert compiled["status"] == "COMPLETED"
+        assert {(page["title"], page["type"]) for page in pages} == {
+            ("Mira Chen", "entity"),
+            ("Least Privilege", "concept"),
+            ("Information Security", "topic"),
+        }
+        assert not list((app.state.settings.knowledge_path / "wiki" / "datasets").glob("*.md"))
+
+    asyncio.run(exercise())
