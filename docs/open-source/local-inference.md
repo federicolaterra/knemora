@@ -14,6 +14,11 @@ sooner and is not an equivalent-quality mode. Explicit per-model or environment 
 silently lowered. The former 27B model remains selectable as `qwen3.8-27b-iq2-s`; it is no longer the
 default.
 
+Both Wiki and Direct chat modes use this same active model and provider path. Direct is not a
+second client or model: it is an ADK invocation with retrieval tools withheld. It therefore makes
+no Wiki, document, dataset, graph, source, or public-search calls, but it does not imply a universal
+latency improvement.
+
 Resolution precedence is a validated absolute `LLAMA_SERVER_BIN` operator override, the verified
 active managed installation, then a validated explicitly configured legacy `LLAMA_CPP_DIR` source
 checkout. Manual developers may still build a separate checkout with `make llm-build`, but normal

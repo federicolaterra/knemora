@@ -12,7 +12,6 @@ from app.llm.errors import LLMContextOverflowError
 TOKEN_CHARACTER_RATIO = 3
 REQUEST_RESERVE_TOKENS = 256
 MINIMUM_OUTPUT_TOKENS = 256
-CURRENT_USER_MARKER = "[CURRENT USER]"
 
 
 def _text_tokens(value: str) -> int:
@@ -47,14 +46,30 @@ def estimate_request_tokens(request: ChatRequest) -> int:
     return message_tokens + tools + schema + request.max_tokens + REQUEST_RESERVE_TOKENS
 
 
-def _current_user_only(content: str) -> str:
-    if CURRENT_USER_MARKER not in content:
-        return content
-    current = content.rsplit(CURRENT_USER_MARKER, maxsplit=1)[1].strip()
-    return (
-        "Older conversation messages were omitted to fit the selected local model context.\n\n"
-        f"{CURRENT_USER_MARKER} {current}"
+def _drop_oldest_history_turn(messages: tuple[ChatMessage, ...]) -> tuple[ChatMessage, ...]:
+    """Drop one oldest pre-current conversational turn without touching privileged/current data."""
+
+    latest_user = max(
+        (index for index, message in enumerate(messages) if message.role == "user"),
+        default=-1,
     )
+    candidates = [
+        index
+        for index, message in enumerate(messages[:latest_user])
+        if message.role in {"user", "assistant"}
+    ]
+    if not candidates:
+        return messages
+    first = candidates[0]
+    remove = {first}
+    if messages[first].role == "user":
+        for index in candidates[1:]:
+            if messages[index].role == "assistant":
+                remove.add(index)
+                break
+            if messages[index].role == "user":
+                break
+    return tuple(message for index, message in enumerate(messages) if index not in remove)
 
 
 def _compact_schema(value: Any) -> Any:
@@ -130,15 +145,13 @@ def fit_request_to_context(request: ChatRequest, context_tokens: int | None) -> 
     if estimate_request_tokens(fitted) <= context_tokens:
         return fitted
 
-    messages = tuple(
-        message.model_copy(update={"content": _current_user_only(message.content)})
-        if message.role == "user"
-        else message
-        for message in fitted.messages
-    )
-    fitted = fitted.model_copy(update={"messages": messages})
-    if estimate_request_tokens(fitted) <= context_tokens:
-        return fitted
+    while True:
+        messages = _drop_oldest_history_turn(fitted.messages)
+        if messages == fitted.messages:
+            break
+        fitted = fitted.model_copy(update={"messages": messages})
+        if estimate_request_tokens(fitted) <= context_tokens:
+            return fitted
 
     if fitted.tools:
         fitted = fitted.model_copy(
@@ -175,9 +188,10 @@ def fit_request_to_context(request: ChatRequest, context_tokens: int | None) -> 
     estimated = estimate_request_tokens(fitted)
     raise LLMContextOverflowError(
         f"This turn needs about {estimated:,} tokens including output and tool reserves, but the "
-        f"selected model has an effective {context_tokens:,}-token context. Older history was "
-        "already removed. Narrow the question, request less evidence, or select a validated larger "
-        "context with './knemora setup --model MODEL_ID --context-tokens N'."
+        f"selected model has an effective {context_tokens:,}-token context. Older conversation "
+        "turns were already removed. Narrow the question, request less evidence, or select a "
+        "validated larger context with "
+        "'./knemora setup --model MODEL_ID --context-tokens N'."
     )
 
 

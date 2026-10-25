@@ -10,6 +10,7 @@ import type {
   PageSummary,
   PaginatedResponse,
   ProblemDetail,
+  ResponseMode,
   RoleRecord,
   SourceDeletionOperation,
   SystemMetadata,
@@ -294,6 +295,7 @@ export const api = {
 export async function streamMessage(
   conversationId: string,
   content: string,
+  responseMode: ResponseMode,
   signal: AbortSignal,
   onDelta: (delta: string) => void,
 ): Promise<void> {
@@ -304,7 +306,7 @@ export async function streamMessage(
       headers: authenticatedInit({
         headers: { "Content-Type": "application/json" },
       }).headers,
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, response_mode: responseMode }),
       signal,
     },
   );

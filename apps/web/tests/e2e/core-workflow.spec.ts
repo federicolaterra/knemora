@@ -977,3 +977,169 @@ test("preserves mobile and intermediate navigation", async ({
     path: testInfo.outputPath("intermediate-graph.png"),
   });
 });
+
+test("keeps Wiki and Direct modes accessible and clear of the composer", async ({
+  page,
+}) => {
+  const submittedBodies: Array<{ content: string; response_mode: string }> = [];
+  let notifyStreamStarted: (() => void) | undefined;
+  let releaseStream: (() => void) | undefined;
+  const streamStarted = new Promise<void>((resolve) => {
+    notifyStreamStarted = resolve;
+  });
+  const streamGate = new Promise<void>((resolve) => {
+    releaseStream = resolve;
+  });
+
+  await page.route("http://localhost:8000/api/v1/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/v1/conversations" && request.method() === "POST")
+      return route.fulfill({
+        status: 201,
+        json: {
+          id: "conversation-mode",
+          user_id: "user-1",
+          title: "Untitled conversation",
+          message_count: 0,
+        },
+      });
+    if (
+      path === "/api/v1/conversations/conversation-mode" &&
+      request.method() === "GET"
+    )
+      return route.fulfill({
+        json: {
+          id: "conversation-mode",
+          user_id: "user-1",
+          title: "Mode test",
+          message_count: 0,
+        },
+      });
+    if (
+      path === "/api/v1/conversations/conversation-mode/messages" &&
+      request.method() === "GET"
+    )
+      return route.fulfill({ json: [] });
+    if (
+      path === "/api/v1/conversations/conversation-1" &&
+      request.method() === "GET"
+    )
+      return route.fulfill({
+        json: {
+          id: "conversation-1",
+          user_id: "user-1",
+          title: "Research thread",
+          message_count: 2,
+        },
+      });
+    if (
+      path === "/api/v1/conversations/conversation-1/messages" &&
+      request.method() === "GET"
+    )
+      return route.fulfill({ json: [] });
+    if (
+      path === "/api/v1/conversations/conversation-mode/messages/stream" &&
+      request.method() === "POST"
+    ) {
+      submittedBodies.push(
+        request.postDataJSON() as { content: string; response_mode: string },
+      );
+      notifyStreamStarted?.();
+      await streamGate;
+      return route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body:
+          'event: message.started\ndata: {"event_id":"mode"}\n\n' +
+          'event: message.delta\ndata: {"event_id":"mode","delta":"Direct response."}\n\n' +
+          'event: message.completed\ndata: {"event_id":"mode"}\n\n',
+      });
+    }
+    return route.fallback();
+  });
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/chat");
+  const modeGroup = page.getByRole("group", { name: "Response mode" });
+  const wiki = page.getByRole("radio", { name: "Wiki" });
+  const direct = page.getByRole("radio", { name: "Direct" });
+  const wikiOption = page.locator('label:has(input[value="wiki"]) span');
+  const directOption = page.locator('label:has(input[value="direct"]) span');
+  const responseDisclaimer = page.getByText(
+    "AI responses may include mistakes.",
+  );
+  const wikiHelp = page.getByText("Wiki: answers grounded in your knowledge");
+  const directHelp = page.getByText(
+    "Direct: local AI without knowledge search",
+  );
+  const composer = page.locator("form.composer");
+  const message = page.getByRole("textbox", { name: "Message" });
+  await expect(wiki).toBeChecked();
+  await expect(wikiHelp).toBeVisible();
+  await expect(wikiHelp).toHaveCSS("font-size", "11px");
+  await expect(wikiOption).toHaveCSS("background-color", "rgb(51, 209, 51)");
+  await expect(wikiOption).toHaveCSS("font-size", "11px");
+  await expect(directOption).toHaveCSS("font-size", "11px");
+  await expect(responseDisclaimer).toHaveCSS("font-size", "11px");
+  const composerBox = await composer.boundingBox();
+  const disclaimerBox = await responseDisclaimer.boundingBox();
+  expect(composerBox).not.toBeNull();
+  expect(disclaimerBox).not.toBeNull();
+  expect(disclaimerBox!.y).toBeGreaterThanOrEqual(
+    composerBox!.y + composerBox!.height,
+  );
+
+  await wiki.focus();
+  await wiki.press("ArrowRight");
+  await expect(direct).toBeChecked();
+  await expect(directHelp).toBeVisible();
+  await expect(directHelp).toHaveCSS("font-size", "11px");
+  await expect(directOption).toHaveCSS("background-color", "rgb(51, 209, 51)");
+
+  await message.fill(
+    Array.from(
+      { length: 8 },
+      (_, index) => `Long prompt line ${index + 1}`,
+    ).join("\n"),
+  );
+  const expandedTextareaBox = await message.boundingBox();
+  const modeBox = await modeGroup.boundingBox();
+  expect(expandedTextareaBox).not.toBeNull();
+  expect(modeBox).not.toBeNull();
+  expect(modeBox!.y).toBeGreaterThanOrEqual(
+    expandedTextareaBox!.y + expandedTextareaBox!.height,
+  );
+
+  await page.getByRole("button", { name: "Send message" }).click();
+  await streamStarted;
+  await expect(wiki).toBeDisabled();
+  await expect(direct).toBeDisabled();
+  await expect(page.getByText("Generating answer…")).toBeVisible();
+  await expect(page.getByText("Searching company knowledge…")).toHaveCount(0);
+  expect(submittedBodies).toHaveLength(1);
+  expect(submittedBodies[0].response_mode).toBe("direct");
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  const mobileTextareaBox = await message.boundingBox();
+  const mobileModeBox = await modeGroup.boundingBox();
+  expect(mobileTextareaBox).not.toBeNull();
+  expect(mobileModeBox).not.toBeNull();
+  expect(mobileModeBox!.y).toBeGreaterThanOrEqual(
+    mobileTextareaBox!.y + mobileTextareaBox!.height,
+  );
+
+  releaseStream?.();
+  await expect(page.getByText("Direct response.")).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole("button", { name: "New conversation" }).click();
+  await expect(wiki).toBeChecked();
+
+  await directOption.click();
+  await page.getByRole("link", { name: /Research thread/ }).click();
+  await expect(wiki).toBeChecked();
+
+  await directOption.click();
+  await page.reload();
+  await expect(wiki).toBeChecked();
+});

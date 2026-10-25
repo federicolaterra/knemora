@@ -555,16 +555,9 @@ def test_forced_retrieval_uses_meaningful_query_terms() -> None:
     call = _forced_retrieval_call(
         ChatRequest(
             messages=(
-                ChatMessage(
-                    role="user",
-                    content=(
-                        "The following is prior conversation data.\n"
-                        "[USER] What is LUMEN-QUAY?\n"
-                        "[ASSISTANT] It is an Atlas project.\n\n"
-                        "[CURRENT USER] What does the local knowledge say about the unrelated "
-                        "garden schedule?"
-                    ),
-                ),
+                ChatMessage(role="user", content="Summarize Project LUMEN-QUAY."),
+                ChatMessage(role="assistant", content="It is an Atlas project."),
+                ChatMessage(role="user", content="Who owns it?"),
             ),
             tools=(
                 ChatToolDefinition(
@@ -578,7 +571,64 @@ def test_forced_retrieval_uses_meaningful_query_terms() -> None:
 
     assert call is not None
     assert call.name == "search_wiki"
-    assert call.arguments["query"] == "unrelated garden schedule"
+    assert call.arguments["query"] == "Project LUMEN-QUAY Who owns"
+
+    later_call = _forced_retrieval_call(
+        ChatRequest(
+            messages=(
+                ChatMessage(role="user", content="Summarize Project LUMEN-QUAY."),
+                ChatMessage(role="assistant", content="It is an Atlas project."),
+                ChatMessage(role="user", content="Who owns it?"),
+                ChatMessage(role="assistant", content="The platform team owns it."),
+                ChatMessage(role="user", content="What are its main risks?"),
+            ),
+            tools=(
+                ChatToolDefinition(
+                    name="search_wiki",
+                    description="Search the Wiki.",
+                    parameters={"type": "object", "properties": {}},
+                ),
+            ),
+        )
+    )
+    assert later_call is not None
+    assert later_call.arguments["query"] == "Project LUMEN-QUAY are main risks"
+
+
+def test_general_chat_and_translation_do_not_force_wiki_retrieval() -> None:
+    tools = (
+        ChatToolDefinition(
+            name="search_wiki",
+            description="Search the Wiki.",
+            parameters={"type": "object", "properties": {}},
+        ),
+    )
+    general = _forced_retrieval_call(
+        ChatRequest(
+            messages=(ChatMessage(role="user", content="What is the capital of Italy?"),),
+            tools=tools,
+        )
+    )
+    general_risk = _forced_retrieval_call(
+        ChatRequest(
+            messages=(ChatMessage(role="user", content="What are the risks of skiing?"),),
+            tools=tools,
+        )
+    )
+    translation = _forced_retrieval_call(
+        ChatRequest(
+            messages=(
+                ChatMessage(role="user", content="Summarize Project LUMEN-QUAY."),
+                ChatMessage(role="assistant", content="Grounded prior answer."),
+                ChatMessage(role="user", content="Translate your previous answer into Italian."),
+            ),
+            tools=tools,
+        )
+    )
+
+    assert general is None
+    assert general_risk is None
+    assert translation is None
 
 
 def test_conflict_answer_does_not_invent_source_precedence() -> None:
@@ -718,6 +768,48 @@ class AgentToolProvider:
         yield ChatChunk(model="fake-local")
 
 
+class GroundedFollowupProvider:
+    """Answer after deterministic retrieval while exposing role-aware follow-up context."""
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    @property
+    def capabilities(self) -> LLMCapabilities:
+        return LLMCapabilities(
+            streaming=True,
+            structured_output=True,
+            cancellation=True,
+            max_context_tokens=8192,
+        )
+
+    async def health(self) -> LLMHealth:
+        return LLMHealth(healthy=True, provider="fake", model="fake-local")
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        assert any(
+            message.role == "tool" and message.name == "read_wiki_page"
+            for message in request.messages
+        )
+        current = [message.content for message in request.messages if message.role == "user"][-1]
+        answer = (
+            "No authorized Wiki evidence identifies an owner."
+            if current == "Who owns it?"
+            else "Acme Corporation is a medicine distribution company."
+        )
+        return ChatResponse(
+            message=ChatMessage(role="assistant", content=answer),
+            model="fake-local",
+            finish_reason="stop",
+            usage=ChatUsage(),
+        )
+
+    async def stream(self, request: ChatRequest) -> AsyncIterator[ChatChunk]:
+        raise AssertionError(f"Tool-enabled ADK calls must use complete responses: {request}")
+        yield ChatChunk(model="fake-local")
+
+
 def test_adk_executes_search_then_page_read_before_grounded_answer(tmp_path: Path) -> None:
     seed_app = build_app(tmp_path)
     _, record = ingest_text(seed_app, b"Acme Corporation is headquartered in Valletta.")
@@ -756,6 +848,49 @@ def test_adk_executes_search_then_page_read_before_grounded_answer(tmp_path: Pat
         "analyze_dataset",
         "search_web",
     }
+
+
+def test_grounded_followup_retrieves_same_subject_and_reports_missing_owner(
+    tmp_path: Path,
+) -> None:
+    seed_app = build_app(tmp_path)
+    _, record = ingest_text(seed_app, b"Acme Corporation distributes medicines from Valletta.")
+    seed_wiki(seed_app, record)
+    provider = GroundedFollowupProvider()
+    app = create_app(
+        settings=seed_app.state.settings,
+        provider=provider,
+        engine=seed_app.state.engine,
+    )
+
+    async def exercise() -> tuple[str, str]:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            conversation = await client.post("/api/v1/conversations", json={})
+            conversation_id = conversation.json()["id"]
+            summary = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Summarize company ACME."},
+            )
+            owner = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Who owns it?"},
+            )
+        assert summary.status_code == 200, summary.text
+        assert owner.status_code == 200, owner.text
+        return str(summary.json()["content"]), str(owner.json()["content"])
+
+    summary, owner = asyncio.run(exercise())
+
+    assert "medicine distribution company" in summary
+    assert 'original filename: "company.txt"' in summary
+    assert "No authorized Wiki evidence identifies an owner." in owner
+    assert [message.role for message in provider.requests[-1].messages[:4]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
 
 
 class DatasetAgentProvider:

@@ -210,6 +210,21 @@ per page. Conversation titles can be renamed inline; otherwise the first persist
 provides a deterministic title without an external model call. Persisted prompt timestamps are
 grouped by the prompt's local calendar day and rendered in the browser timezone.
 
+## Wiki / Direct Chat Modes
+
+The composer includes a per-turn **Wiki / Direct** selector. **Wiki** is the default for new,
+opened, reloaded, and legacy conversations. It keeps the existing intent-aware experience:
+organization-specific questions use authorized Wiki/source retrieval and exact provenance, while
+ordinary conversation and bounded arithmetic keep their existing non-retrieval routes.
+
+**Direct** sends the turn through the same Google ADK root agent, provider-neutral `LLMProvider`,
+llama.cpp runtime, and selected local model with all Wiki, source, dataset, graph, and public-web
+tools withheld. It can use visible conversation text for continuity but does not freshly verify
+private knowledge or produce new source grounding. Switch back to Wiki when an answer must be
+checked against organizational evidence. Changing modes never changes earlier messages or
+citations, and no speed improvement is implied. See [AI (SI) Chat modes](docs/open-source/chat.md)
+for API, privacy, history, and switching details.
+
 ## Portable backups
 
 Full backups default to `~/Documents/Knemora/Backups/` and include a consistent SQLite snapshot,
@@ -436,6 +451,7 @@ KNEMORA_SKIP_LLM=1 make app-start
 
 - [Installation](docs/open-source/installation.md)
 - [Architecture](docs/open-source/architecture.md)
+- [AI (SI) Chat modes](docs/open-source/chat.md)
 - [Local inference](docs/open-source/local-inference.md)
 - [Ingestion and provenance](docs/open-source/ingestion.md)
 - [Knowledge Engine](docs/open-source/knowledge-engine.md)

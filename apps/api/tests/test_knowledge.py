@@ -5,10 +5,12 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+from docx import Document as OpenDocument
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine, func, select
@@ -17,14 +19,15 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import Settings
 from app.db.base import Base
-from app.db.models import KnowledgeCompilationJob, SourceRecord, WikiChange
+from app.db.models import IngestionJob, KnowledgeCompilationJob, SourceRecord, WikiChange
 from app.ingestion.service import IngestionService
 from app.knowledge.compiler import SYSTEM_PROMPT, KnowledgeCompiler
-from app.knowledge.errors import InvalidKnowledgeProposalError
+from app.knowledge.errors import InvalidKnowledgeProposalError, WikiConflictError
 from app.knowledge.store import WikiStore
 from app.knowledge.types import (
     ClaimClassification,
     ClaimStatus,
+    CompactKnowledgeProposal,
     KnowledgeProposal,
     PageKind,
     ProvenanceRef,
@@ -41,7 +44,7 @@ from app.llm import (
     LLMCapabilities,
     LLMHealth,
 )
-from app.llm.errors import LLMTimeoutError
+from app.llm.errors import LLMResponseError, LLMTimeoutError
 from app.main import create_app
 
 FIXTURES = Path(__file__).parent / "fixtures" / "knowledge"
@@ -130,6 +133,32 @@ class TimeoutThenProposalProvider(ProposalProvider):
         return await super().chat(request)
 
 
+class ResponseErrorOnceProvider(ProposalProvider):
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            raise LLMResponseError("simulated structured response contract failure")
+        if not self.outputs:
+            raise AssertionError("The compiler made an unexpected model call.")
+        return ChatResponse(
+            message=ChatMessage(role="assistant", content=self.outputs.pop(0)),
+            model="fake-knowledge",
+            finish_reason="stop",
+            usage=ChatUsage(),
+        )
+
+
+class ReducedContextProposalProvider(ProposalProvider):
+    @property
+    def capabilities(self) -> LLMCapabilities:
+        return LLMCapabilities(
+            streaming=True,
+            structured_output=True,
+            cancellation=True,
+            max_context_tokens=3000,
+        )
+
+
 class AlwaysTruncatingProposalProvider(ProposalProvider):
     @property
     def capabilities(self) -> LLMCapabilities:
@@ -186,11 +215,14 @@ def build_app(tmp_path: Path, provider: ProposalProvider) -> FastAPI:
 
 
 async def upload_and_compile(
-    client: AsyncClient, filename: str, content: bytes
+    client: AsyncClient,
+    filename: str,
+    content: bytes,
+    content_type: str = "text/markdown",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     uploaded = await client.post(
         "/api/v1/documents",
-        files={"file": (filename, content, "text/markdown")},
+        files={"file": (filename, content, content_type)},
     )
     assert uploaded.status_code == 201, uploaded.text
     compiled = await client.post(
@@ -419,6 +451,282 @@ def federico_skills_proposal() -> dict[str, object]:
     return {"pages": pages, "warnings": []}
 
 
+def named_subjects_proposal(
+    *subjects: tuple[str, str, tuple[str, ...]],
+    relationships: dict[str, list[dict[str, object]]] | None = None,
+) -> dict[str, object]:
+    return {
+        "pages": [
+            {
+                "type": kind,
+                "title": title,
+                "aliases": list(aliases),
+                "topics": [],
+                "summary": f"Source-backed information about {title}.",
+                "claims": [
+                    {
+                        "key": "source_description",
+                        "text": f"The source explicitly discusses {title}.",
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    }
+                ],
+                "relationships": (relationships or {}).get(title, []),
+            }
+            for title, kind, aliases in subjects
+        ],
+        "warnings": [],
+    }
+
+
+def fabrizio_relationship_proposal(
+    colleague_text: str = "Fabrizio was a colleague of Federico La Terra.",
+) -> dict[str, object]:
+    return {
+        "pages": [
+            {
+                "type": "entity",
+                "title": "Fabrizio Bonaccorsi",
+                "aliases": [],
+                "topics": [],
+                "summary": "Fabrizio Bonaccorsi is an Italian web developer.",
+                "claims": [
+                    {
+                        "key": "occupation",
+                        "text": "Fabrizio Bonaccorsi is an Italian web developer.",
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    },
+                    {
+                        "key": "employment",
+                        "text": "Fabrizio Bonaccorsi works at ABC Company.",
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    },
+                    {
+                        "key": "professional_relationship",
+                        "text": colleague_text,
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    },
+                ],
+                # Qwen may retain both explicit facts as claims without proposing relationships.
+                "relationships": [],
+            },
+            {
+                "type": "entity",
+                "title": "ABC Company",
+                "aliases": [],
+                "topics": [],
+                "summary": "ABC Company employs Fabrizio Bonaccorsi.",
+                "claims": [
+                    {
+                        "key": "employee",
+                        "text": "Fabrizio Bonaccorsi works at ABC Company.",
+                        "classification": "source_fact",
+                        "source_record_ordinals": [1],
+                    }
+                ],
+                "relationships": [],
+            },
+        ],
+        "warnings": [],
+    }
+
+
+def compact_fabrizio_relationship_proposal(
+    colleague_text: str = "Fabrizio was a colleague of Federico La Terra.",
+) -> dict[str, object]:
+    return {
+        "v": 2,
+        "p": [
+            {"k": "entity", "t": "Fabrizio Bonaccorsi"},
+            {"k": "entity", "t": "ABC Company"},
+        ],
+        "f": [
+            {
+                "on": [{"p": 0, "k": "occupation"}],
+                "x": "Fabrizio Bonaccorsi is an Italian web developer.",
+                "s": [1],
+            },
+            {
+                "on": [
+                    {"p": 0, "k": "employment"},
+                    {"p": 1, "k": "employee"},
+                ],
+                "x": "Fabrizio Bonaccorsi works at ABC Company.",
+                "s": [1],
+            },
+            {
+                "on": [{"p": 0, "k": "professional_relationship"}],
+                "x": colleague_text,
+                "s": [1],
+            },
+        ],
+    }
+
+
+def equivalent_people_proposal(
+    *, introduction_ordinal: int, employment_ordinal: int, colleague_ordinal: int
+) -> dict[str, object]:
+    proposal = fabrizio_relationship_proposal()
+    pages = proposal["pages"]
+    assert isinstance(pages, list)
+    fabrizio = pages[0]
+    abc = pages[1]
+    assert isinstance(fabrizio, dict) and isinstance(abc, dict)
+    claims = fabrizio["claims"]
+    assert isinstance(claims, list)
+    claims[0]["source_record_ordinals"] = [introduction_ordinal]
+    claims[1]["source_record_ordinals"] = [employment_ordinal]
+    claims[2]["source_record_ordinals"] = [colleague_ordinal]
+    abc_claims = abc["claims"]
+    assert isinstance(abc_claims, list)
+    abc_claims[0]["source_record_ordinals"] = [employment_ordinal]
+    return proposal
+
+
+def compact_equivalent_people_proposal(
+    *, introduction_ordinal: int, employment_ordinal: int, colleague_ordinal: int
+) -> dict[str, object]:
+    proposal = compact_fabrizio_relationship_proposal()
+    facts = proposal["f"]
+    assert isinstance(facts, list)
+    for fact, ordinal in zip(
+        facts,
+        (introduction_ordinal, employment_ordinal, colleague_ordinal),
+        strict=True,
+    ):
+        assert isinstance(fact, dict)
+        fact["s"] = [ordinal]
+    return proposal
+
+
+def build_text_pdf(text: str) -> bytes:
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    commands = ["BT /F1 11 Tf 72 740 Td"]
+    for index, line in enumerate(escaped.splitlines()):
+        if index:
+            commands.append("0 -18 Td")
+        commands.append(f"({line}) Tj")
+    commands.append("ET")
+    content = ("\n".join(commands) + "\n").encode("ascii")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        f"<< /Length {len(content)} >>\nstream\n".encode() + content + b"endstream",
+    ]
+    result = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(result))
+        result.extend(f"{number} 0 obj\n".encode())
+        result.extend(body)
+        result.extend(b"\nendobj\n")
+    xref = len(result)
+    result.extend(f"xref\n0 {len(objects) + 1}\n".encode())
+    result.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        result.extend(f"{offset:010d} 00000 n \n".encode())
+    result.extend(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(result)
+
+
+def build_people_fixture(
+    format_name: str, *, headed: bool
+) -> tuple[bytes, str, str, tuple[int, ...]]:
+    paragraphs = (
+        "Fabrizio Bonaccorsi is an Italian web developer.",
+        "He works at ABC Company.",
+        "Fabrizio was a colleague of Federico La Terra.",
+        "Fabrizio might be a friend of Federico La Terra and may prefer sushi.",
+        'A note quotes "Fabrizio is the owner of ABC Company."',
+        "If Fabrizio studied at Malta University, that would be recorded separately.",
+        "The unrelated garden paragraph discusses tomato seedlings.",
+    )
+    lines = (("People",) if headed else ()) + paragraphs
+    text = "\n".join(lines)
+    if format_name == "txt":
+        return text.encode(), "people.txt", "text/plain", (1, 1, 1)
+    if format_name == "pdf":
+        return build_text_pdf(text), "people.pdf", "application/pdf", (1, 1, 1)
+    document = OpenDocument()
+    if headed:
+        document.add_heading("People", level=1)
+    for paragraph in paragraphs:
+        document.add_paragraph(paragraph)
+    output = BytesIO()
+    document.save(output)
+    offset = 1 if headed else 0
+    return (
+        output.getvalue(),
+        "people.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        (1 + offset, 2 + offset, 3 + offset),
+    )
+
+
+def test_compact_v2_proposal_expands_without_losing_claim_semantics() -> None:
+    legacy = KnowledgeProposal.model_validate(fabrizio_relationship_proposal())
+    compact_payload = compact_fabrizio_relationship_proposal()
+    compact = CompactKnowledgeProposal.model_validate(compact_payload)
+    expanded = compact.expand()
+
+    def claim_semantics(proposal: KnowledgeProposal) -> set[tuple[str, str, str, tuple[int, ...]]]:
+        return {
+            (page.title, claim.key, claim.text, claim.source_record_ordinals)
+            for page in proposal.pages
+            for claim in page.claims
+        }
+
+    assert compact.contract_version == 2
+    assert claim_semantics(expanded) == claim_semantics(legacy)
+    assert all(page.summary == page.claims[0].text for page in expanded.pages)
+    legacy_size = len(json.dumps(fabrizio_relationship_proposal(), separators=(",", ":")))
+    compact_size = len(json.dumps(compact_payload, separators=(",", ":")))
+    assert compact_size <= legacy_size * 0.65
+
+
+def test_compact_v2_proposal_rejects_unknown_page_references() -> None:
+    payload = compact_fabrizio_relationship_proposal()
+    facts = payload["f"]
+    assert isinstance(facts, list)
+    fact = facts[0]
+    assert isinstance(fact, dict)
+    fact["on"] = [{"p": 99, "k": "occupation"}]
+
+    with pytest.raises(ValueError, match="unknown page index"):
+        CompactKnowledgeProposal.model_validate(payload)
+
+
+def test_compact_v2_relationship_expands_to_legacy_relationship() -> None:
+    payload = compact_fabrizio_relationship_proposal()
+    payload["r"] = [
+        {
+            "f": 0,
+            "r": "works_at",
+            "t": "ABC Company",
+            "s": [1],
+        }
+    ]
+
+    expanded = CompactKnowledgeProposal.model_validate(payload).expand()
+
+    assert len(expanded.pages[0].relationships) == 1
+    assert expanded.pages[0].relationships[0].model_dump(mode="json") == {
+        "relation": "works_at",
+        "target_title": "ABC Company",
+        "source_record_ordinals": [1],
+    }
+
+
 def test_related_sources_build_one_evolving_wiki_with_conflict_provenance(
     tmp_path: Path,
 ) -> None:
@@ -530,9 +838,108 @@ def test_related_sources_build_one_evolving_wiki_with_conflict_provenance(
         assert "delete every Wiki page" not in provider.requests[0].messages[0].content
         assert provider.requests[0].response_schema is not None
         assert "instructions" not in provider.requests[0].response_schema
+        assert set(provider.requests[0].response_schema["properties"]) == {
+            "pages",
+            "warnings",
+        }
 
         with Session(app.state.engine) as session:
             assert session.scalar(select(func.count()).select_from(WikiChange)) == 5
+
+    asyncio.run(exercise())
+
+
+def test_v1_default_preserves_relationships_provenance_and_wiki_shape(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        provider = ProposalProvider(
+            named_subjects_proposal(("Federico La Terra", "entity", ())),
+            fabrizio_relationship_proposal(),
+        )
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "federico.txt",
+                b"Federico La Terra is a software developer.",
+                "text/plain",
+            )
+            _, compiled = await upload_and_compile(
+                client,
+                "people.txt",
+                (
+                    b"Fabrizio Bonaccorsi is an Italian web developer. "
+                    b"Fabrizio Bonaccorsi works at ABC Company. "
+                    b"Fabrizio was a colleague of Federico La Terra."
+                ),
+                "text/plain",
+            )
+
+        store = WikiStore(app.state.settings.knowledge_path)
+        fabrizio = store.read_page("Fabrizio Bonaccorsi")
+        abc = store.read_page("ABC Company")
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["batches"][0]["proposal_contract_version"] == 1
+        assert compiled["report"]["batches"][0]["response_character_count"] > 0
+        assert {claim.key for claim in fabrizio.claims} == {
+            "occupation",
+            "employment",
+            "professional_relationship",
+        }
+        assert {claim.key for claim in abc.claims} == {"employee"}
+        assert {relationship.relation for relationship in fabrizio.relationships} == {
+            "works_at",
+            "colleague_of",
+        }
+        assert all(relationship.provenance for relationship in fabrizio.relationships)
+
+    asyncio.run(exercise())
+
+
+def test_later_batches_use_successful_measured_output_for_budgeting(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        proposal = named_subjects_proposal(("Avery Morgan", "entity", ()))
+        provider = ProposalProvider(proposal, proposal)
+        app = build_app(tmp_path, provider)
+        source = ("Avery Morgan leads operations. " * 80).encode()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            _, compiled = await upload_and_compile(client, "multi.txt", source, "text/plain")
+
+        assert compiled["status"] == "COMPLETED"
+        assert len(provider.requests) == 2
+        assert provider.requests[0].max_tokens == 2048
+        assert provider.requests[1].max_tokens < provider.requests[0].max_tokens
+        attempts = [batch["attempts"][0] for batch in compiled["report"]["batches"]]
+        assert [attempt["budget_basis"] for attempt in attempts] == [
+            "configured_bootstrap",
+            "measured_task_requirements",
+        ]
+        assert all(len(batch["attempts"]) == 1 for batch in compiled["report"]["batches"])
+
+    asyncio.run(exercise())
+
+
+def test_bootstrap_output_budget_respects_effective_provider_context(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        provider = ReducedContextProposalProvider(fabrizio_relationship_proposal())
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            _, compiled = await upload_and_compile(
+                client,
+                "people.txt",
+                (
+                    b"Fabrizio Bonaccorsi is an Italian web developer. "
+                    b"Fabrizio Bonaccorsi works at ABC Company. "
+                    b"Fabrizio was a colleague of Federico La Terra."
+                ),
+                "text/plain",
+            )
+
+        assert compiled["status"] == "COMPLETED"
+        assert provider.requests[0].max_tokens == 1500
+        attempt = compiled["report"]["batches"][0]["attempts"][0]
+        assert attempt["budget_basis"] == "effective_context_bootstrap"
 
     asyncio.run(exercise())
 
@@ -712,11 +1119,23 @@ class FailOnceStore(WikiStore):
             raise OSError("simulated interruption")
 
 
+class ConflictOnceStore(WikiStore):
+    def __init__(self, root: Path) -> None:
+        super().__init__(root)
+        self.fail_next_page_write = True
+
+    def _write_page(self, path: Path, page: WikiPage) -> None:
+        super()._write_page(path, page)
+        if self.fail_next_page_write:
+            self.fail_next_page_write = False
+            raise WikiConflictError("simulated stale proposal conflict")
+
+
 def test_interrupted_compilation_rolls_back_and_reuses_validated_proposal(
     tmp_path: Path,
 ) -> None:
     async def exercise() -> None:
-        provider = ProposalProvider(acme_proposal())
+        provider = ProposalProvider(fabrizio_relationship_proposal())
         app = build_app(tmp_path, provider)
         settings = app.state.settings
         store = FailOnceStore(settings.knowledge_path)
@@ -725,9 +1144,13 @@ def test_interrupted_compilation_rolls_back_and_reuses_validated_proposal(
             owner = ingestion.get_or_create_local_user()
             source = ingestion.ingest(
                 owner=owner,
-                filename="acme-profile.md",
+                filename="people.md",
                 declared_content_type="text/markdown",
-                data=(FIXTURES / "acme-profile.md").read_bytes(),
+                data=(
+                    b"Fabrizio Bonaccorsi is an Italian web developer. "
+                    b"Fabrizio Bonaccorsi works at ABC Company. "
+                    b"Fabrizio was a colleague of Federico La Terra."
+                ),
             )
             compiler = KnowledgeCompiler(
                 session=session,
@@ -740,6 +1163,9 @@ def test_interrupted_compilation_rolls_back_and_reuses_validated_proposal(
             )
             assert failed.status == "FAILED"
             assert store.list_pages() == ()
+            assert failed.proposal is not None
+            assert "pages" in failed.proposal
+            assert "v" not in failed.proposal
             recovered = await compiler.compile(
                 owner_id=owner.id, document_version_id=source.version.id
             )
@@ -775,11 +1201,183 @@ def test_invalid_structured_model_output_is_failed_and_retryable(tmp_path: Path)
                 "Local model output did not match the structured knowledge proposal schema."
             )
             assert WikiStore(settings.knowledge_path).list_pages() == ()
+            assert len(provider.requests) == 1
             retried = await compiler.compile(
                 owner_id=owner.id, document_version_id=source.version.id
             )
             assert retried.status == "COMPLETED"
             assert retried.attempt_count == 2
+            assert len(provider.requests) == 2
+            assert all(
+                set(request.response_schema["properties"]) == {"pages", "warnings"}
+                for request in provider.requests
+                if request.response_schema is not None
+            )
+
+    asyncio.run(exercise())
+
+
+def test_provider_response_error_fails_without_automatic_fallback(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        provider = ResponseErrorOnceProvider(acme_proposal())
+        app = build_app(tmp_path, provider)
+        settings = app.state.settings
+        with Session(app.state.engine) as session:
+            ingestion = IngestionService(session=session, settings=settings)
+            owner = ingestion.get_or_create_local_user()
+            source = ingestion.ingest(
+                owner=owner,
+                filename="acme-profile.md",
+                declared_content_type="text/markdown",
+                data=(FIXTURES / "acme-profile.md").read_bytes(),
+            )
+            compiler = KnowledgeCompiler(session=session, settings=settings, provider=provider)
+            failed = await compiler.compile(
+                owner_id=owner.id, document_version_id=source.version.id
+            )
+            assert failed.status == "FAILED"
+            assert failed.error == (
+                "Knowledge compilation failed because the local model returned an invalid response."
+            )
+            assert failed.proposal is None
+            assert WikiStore(settings.knowledge_path).list_pages() == ()
+            assert len(provider.requests) == 1
+            compiled = await compiler.compile(
+                owner_id=owner.id, document_version_id=source.version.id
+            )
+            compiled_status = compiled.status
+            compiled_report = compiled.report
+
+        assert compiled_status == "COMPLETED"
+        assert len(provider.requests) == 2
+        assert all(
+            request.response_schema is not None
+            and set(request.response_schema["properties"]) == {"pages", "warnings"}
+            for request in provider.requests
+        )
+        assert compiled_report is not None
+        batch = compiled_report["batches"][0]
+        assert batch["proposal_contract_version"] == 1
+        assert len(batch["attempts"]) == 1
+        assert batch["attempts"][0]["retry_cause"] is None
+
+    asyncio.run(exercise())
+
+
+def test_compact_v2_model_response_is_rejected_without_fallback(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        provider = ProposalProvider(compact_fabrizio_relationship_proposal())
+        app = build_app(tmp_path, provider)
+        settings = app.state.settings
+        with Session(app.state.engine) as session:
+            ingestion = IngestionService(session=session, settings=settings)
+            owner = ingestion.get_or_create_local_user()
+            source = ingestion.ingest(
+                owner=owner,
+                filename="people.md",
+                declared_content_type="text/markdown",
+                data=(
+                    b"Fabrizio Bonaccorsi is an Italian web developer. "
+                    b"Fabrizio Bonaccorsi works at ABC Company. "
+                    b"Fabrizio was a colleague of Federico La Terra."
+                ),
+            )
+            failed = await KnowledgeCompiler(
+                session=session, settings=settings, provider=provider
+            ).compile(owner_id=owner.id, document_version_id=source.version.id)
+            failed_status = failed.status
+            failed_error = failed.error
+
+        assert failed_status == "FAILED"
+        assert failed_error == (
+            "Local model output did not match the structured knowledge proposal schema."
+        )
+        assert len(provider.requests) == 1
+        assert WikiStore(settings.knowledge_path).list_pages() == ()
+
+    asyncio.run(exercise())
+
+
+def test_valid_short_fixture_uses_one_v1_request_without_fallback(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        provider = ProposalProvider(acme_proposal())
+        app = build_app(tmp_path, provider)
+        settings = app.state.settings
+        with Session(app.state.engine) as session:
+            ingestion = IngestionService(session=session, settings=settings)
+            owner = ingestion.get_or_create_local_user()
+            source = ingestion.ingest(
+                owner=owner,
+                filename="acme-profile.md",
+                declared_content_type="text/markdown",
+                data=(FIXTURES / "acme-profile.md").read_bytes(),
+            )
+            compiled = await KnowledgeCompiler(
+                session=session, settings=settings, provider=provider
+            ).compile(owner_id=owner.id, document_version_id=source.version.id)
+            status = compiled.status
+            report = compiled.report
+
+        assert status == "COMPLETED"
+        assert len(provider.requests) == 1
+        request = provider.requests[0]
+        assert request.messages[0].content == SYSTEM_PROMPT
+        assert request.max_tokens == 2048
+        assert request.response_schema is not None
+        assert set(request.response_schema["properties"]) == {"pages", "warnings"}
+        assert report is not None
+        batch = report["batches"][0]
+        assert batch["proposal_contract_version"] == 1
+        assert len(batch["attempts"]) == 1
+        assert batch["attempts"][0]["retry_cause"] is None
+
+    asyncio.run(exercise())
+
+
+def test_wiki_conflict_discards_cached_proposal_before_user_retry(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        provider = ProposalProvider(
+            fabrizio_relationship_proposal(),
+            fabrizio_relationship_proposal(),
+        )
+        app = build_app(tmp_path, provider)
+        settings = app.state.settings
+        store = ConflictOnceStore(settings.knowledge_path)
+        with Session(app.state.engine) as session:
+            ingestion = IngestionService(session=session, settings=settings)
+            owner = ingestion.get_or_create_local_user()
+            source = ingestion.ingest(
+                owner=owner,
+                filename="people.md",
+                declared_content_type="text/markdown",
+                data=(
+                    b"Fabrizio Bonaccorsi is an Italian web developer. "
+                    b"Fabrizio Bonaccorsi works at ABC Company. "
+                    b"Fabrizio was a colleague of Federico La Terra."
+                ),
+            )
+            compiler = KnowledgeCompiler(
+                session=session,
+                settings=settings,
+                provider=provider,
+                store=store,
+            )
+            failed = await compiler.compile(
+                owner_id=owner.id, document_version_id=source.version.id
+            )
+            assert failed.status == "FAILED"
+            assert failed.error == "Knowledge compilation failed: WikiConflictError."
+            assert failed.proposal is None
+            assert failed.last_completed_stage is None
+            assert store.list_pages() == ()
+
+            recovered = await compiler.compile(
+                owner_id=owner.id, document_version_id=source.version.id
+            )
+            assert recovered.status == "COMPLETED"
+            assert recovered.attempt_count == 2
             assert len(provider.requests) == 2
 
     asyncio.run(exercise())
@@ -1007,14 +1605,30 @@ def fake_page(title: str, kind: PageKind = PageKind.CONCEPT) -> WikiPage:
 def test_existing_page_authorization_is_bound_to_each_cited_record() -> None:
     existing = fake_page("Project Aurora")
     proposal = KnowledgeProposal.model_validate(project_aurora_proposal())
+    version_id = uuid.uuid4()
+    records = tuple(
+        (
+            SourceRecord(
+                id=uuid.uuid4(),
+                document_version_id=version_id,
+                ordinal=ordinal,
+                content=content,
+                locator={"line_start": ordinal, "line_end": ordinal},
+                parser_name="test",
+                parser_version="1",
+            ),
+            content,
+        )
+        for ordinal, content in (
+            (1, "Unrelated garden schedule."),
+            (2, "Project Aurora appears only here."),
+        )
+    )
 
     with pytest.raises(InvalidKnowledgeProposalError, match="Project Aurora"):
         KnowledgeCompiler._validate_existing_page_grounding(
             proposal,
-            record_tokens={
-                1: ("unrelated", "garden", "schedule"),
-                2: ("project", "aurora", "appears", "only", "here"),
-            },
+            batch=records,
             existing_pages=(existing,),
         )
 
@@ -1073,3 +1687,724 @@ def test_legacy_wiki_metadata_is_copied_without_deleting_original(tmp_path: Path
     assert store.internal_root == root / ".knemora"
     assert (store.internal_root / "state.json").read_text() == (legacy / "state.json").read_text()
     assert legacy.exists()
+
+
+@pytest.mark.parametrize(
+    ("source", "colleague_text"),
+    (
+        (
+            (
+                "FABRIZIO BONACCORSI BIO\n\n"
+                "Fabrizio Bonaccorsi is an Italian web developer who specialises in the PHP "
+                "programming language and the Magento framework.\n"
+                "He works at ABC Company and lives in Cesena with his family.\n\n"
+                "PROFESSIONAL RELATIONSHIP\n"
+                "Fabrizio was a colleague of Federico La Terra; they are also very good friends "
+                "who share a passion for eating sushi.\n"
+            ),
+            "Fabrizio was a colleague of Federico La Terra.",
+        ),
+        (
+            """Fabrizio Bonaccorsi is an Italian web developer.
+He works at ABC Company.
+Fabrizio was a colleague of Federico La Terra.
+""",
+            "Fabrizio was a colleague of Federico La Terra.",
+        ),
+        (
+            (
+                "  Fabrizio Bonaccorsi is an Italian web developer.  \n\n\n"
+                "He works at ABC Company.   \n\n"
+                "Fabrizio was a colleague of Federico La Terra.  \n"
+            ),
+            "Fabrizio was a colleague of Federico La Terra.",
+        ),
+        (
+            """Fabrizio Bonaccorsi is an Italian web developer.
+He works at ABC Company.
+Fabrizio is a colleague of Federico La Terra.
+""",
+            "Fabrizio is a colleague of Federico La Terra.",
+        ),
+        (
+            """Fabrizio Bonaccorsi is an Italian web developer.
+He works at ABC Company.
+Fabrizio is a former colleague of Federico La Terra.
+""",
+            "Fabrizio is a former colleague of Federico La Terra.",
+        ),
+    ),
+)
+def test_natural_prose_recovers_historical_colleague_and_pronoun_employment_edges(
+    tmp_path: Path, source: str, colleague_text: str
+) -> None:
+    async def exercise() -> None:
+        federico = named_subjects_proposal(("Federico La Terra", "entity", ()))
+        relationship_proposal = fabrizio_relationship_proposal(colleague_text)
+        provider = ProposalProvider(federico, relationship_proposal, relationship_proposal)
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "federico.md",
+                b"Federico La Terra is a software developer.",
+            )
+            federico_path = next(
+                path
+                for path in app.state.settings.knowledge_path.rglob("*.md")
+                if path.stem == "federico-la-terra"
+            )
+            federico_before = federico_path.read_bytes()
+            uploaded, compiled = await upload_and_compile(
+                client, "fabrizio.txt", source.encode(), "text/plain"
+            )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+            repeated = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+            wiki_before_reprocess = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
+            reprocessed = await client.post(
+                f"/api/v1/ingestion-jobs/{uploaded['ingestion_job_id']}/reprocess"
+            )
+            recompiled = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+
+        store = WikiStore(app.state.settings.knowledge_path)
+        fabrizio = store.read_page("Fabrizio Bonaccorsi")
+        federico_page = store.read_page("Federico La Terra")
+        abc = store.read_page("ABC Company")
+        relations = {
+            (page.id, relationship.relation, relationship.target_id)
+            for _, page in store.page_snapshot()
+            for relationship in page.relationships
+        }
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 2
+        assert relations == {
+            (fabrizio.id, "colleague_of", federico_page.id),
+            (fabrizio.id, "works_at", abc.id),
+        }
+        assert (
+            next(
+                claim.text for claim in fabrizio.claims if claim.key == "professional_relationship"
+            )
+            == colleague_text
+        )
+        assert federico_path.read_bytes() == federico_before
+        assert all(
+            relationship.relation not in {"friend_of", "likes_sushi"}
+            for _, page in store.page_snapshot()
+            for relationship in page.relationships
+        )
+        assert graph["total_edges"] == 2
+        graph_edges = {
+            (edge["source"], edge["target"]): set(edge["relations"]) for edge in graph["edges"]
+        }
+        assert set(graph_edges) == {
+            (fabrizio.id, abc.id),
+            (fabrizio.id, federico_page.id),
+        }
+        assert "works_at" in graph_edges[(fabrizio.id, abc.id)]
+        assert "colleague_of" in graph_edges[(fabrizio.id, federico_page.id)]
+        assert repeated.json()["id"] == compiled["id"]
+        assert reprocessed.status_code == 200
+        assert recompiled.json()["report"]["pages_created"] == []
+        assert recompiled.json()["report"]["pages_updated"] == []
+        wiki_after_reprocess = {
+            path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+            for path in app.state.settings.knowledge_path.rglob("*")
+            if path.is_file()
+        }
+        assert wiki_after_reprocess == wiki_before_reprocess
+        assert len(provider.requests) == 3
+        assert all(
+            private_name not in warning
+            for warning in compiled["report"]["warnings"]
+            for private_name in ("Fabrizio", "Federico", "ABC Company")
+        )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("headed", (False, True), ids=("heading-free", "headed"))
+def test_equivalent_txt_pdf_docx_preserve_semantics_locators_and_no_op(
+    tmp_path: Path, headed: bool
+) -> None:
+    async def compile_format(format_name: str) -> dict[str, Any]:
+        fixture, filename, content_type, ordinals = build_people_fixture(format_name, headed=headed)
+        provider = ProposalProvider(
+            named_subjects_proposal(("Federico La Terra", "entity", ())),
+            equivalent_people_proposal(
+                introduction_ordinal=ordinals[0],
+                employment_ordinal=ordinals[1],
+                colleague_ordinal=ordinals[2],
+            ),
+            equivalent_people_proposal(
+                introduction_ordinal=ordinals[0],
+                employment_ordinal=ordinals[1],
+                colleague_ordinal=ordinals[2],
+            ),
+        )
+        app = build_app(tmp_path / format_name, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "federico.txt",
+                b"Federico La Terra is a software developer.",
+                "text/plain",
+            )
+            uploaded, compiled = await upload_and_compile(client, filename, fixture, content_type)
+            source_root = app.state.settings.source_store_path
+            original_path = source_root / uploaded["original_uri"]
+            original_before = original_path.read_bytes()
+            session_factory = app.state.session_factory
+            with session_factory() as session:
+                source_record_ids_before = tuple(
+                    str(record.id)
+                    for record in session.scalars(
+                        select(SourceRecord)
+                        .where(
+                            SourceRecord.document_version_id
+                            == uuid.UUID(uploaded["document_version_id"])
+                        )
+                        .order_by(SourceRecord.ordinal)
+                    )
+                )
+            first_graph = (await client.get("/api/v1/wiki/graph")).json()
+            wiki_before = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
+            reprocessed = await client.post(
+                f"/api/v1/ingestion-jobs/{uploaded['ingestion_job_id']}/reprocess"
+            )
+            recompiled = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+            assert recompiled.json()["status"] == "COMPLETED", recompiled.json()
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+            assert graph == first_graph
+
+        store = WikiStore(app.state.settings.knowledge_path)
+        fabrizio = store.read_page("Fabrizio Bonaccorsi")
+        federico = store.read_page("Federico La Terra")
+        abc = store.read_page("ABC Company")
+        relationships = {
+            relationship.relation: relationship for relationship in fabrizio.relationships
+        }
+        relation_pairs = {
+            (edge["source"], edge["target"], relation)
+            for edge in graph["edges"]
+            for relation in edge["relations"]
+        }
+        wiki_after = {
+            path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+            for path in app.state.settings.knowledge_path.rglob("*")
+            if path.is_file()
+        }
+        with session_factory() as session:
+            source_records = tuple(
+                session.scalars(
+                    select(SourceRecord)
+                    .where(
+                        SourceRecord.document_version_id
+                        == uuid.UUID(uploaded["document_version_id"])
+                    )
+                    .order_by(SourceRecord.ordinal)
+                )
+            )
+            ingestion_job = session.get(IngestionJob, uuid.UUID(uploaded["ingestion_job_id"]))
+            assert ingestion_job is not None
+            ingestion_timings = ingestion_job.processing_metadata["timings_ms"]
+
+        return {
+            "compiled": compiled,
+            "page_ids": (fabrizio.id, federico.id, abc.id),
+            "claim_ids": tuple(sorted(claim.id for claim in fabrizio.claims)),
+            "relations": set(relationships),
+            "employment_locators": tuple(
+                item.locator for item in relationships["works_at"].provenance
+            ),
+            "colleague_locators": tuple(
+                item.locator for item in relationships["colleague_of"].provenance
+            ),
+            "relation_pairs": relation_pairs,
+            "original_preserved": original_path.read_bytes() == original_before == fixture,
+            "source_record_ids": tuple(str(record.id) for record in source_records),
+            "source_record_ids_before": source_record_ids_before,
+            "wiki_no_op": wiki_after == wiki_before,
+            "reprocessed": reprocessed.status_code,
+            "recompiled": recompiled.json(),
+            "ingestion_timings": ingestion_timings,
+        }
+
+    async def exercise() -> None:
+        results = {
+            format_name: await compile_format(format_name) for format_name in ("txt", "pdf", "docx")
+        }
+        assert len({result["page_ids"] for result in results.values()}) == 1
+        assert len({result["claim_ids"] for result in results.values()}) == 1
+        assert len({frozenset(result["relation_pairs"]) for result in results.values()}) == 1
+        for result in results.values():
+            assert result["compiled"]["status"] == "COMPLETED"
+            assert result["relations"] == {"colleague_of", "works_at"}
+            assert result["original_preserved"] is True
+            assert result["wiki_no_op"] is True
+            assert result["source_record_ids"] == result["source_record_ids_before"]
+            assert result["reprocessed"] == 200
+            assert result["recompiled"]["report"]["pages_created"] == []
+            assert result["recompiled"]["report"]["pages_updated"] == []
+            assert set(result["ingestion_timings"]) >= {
+                "parse_ms",
+                "normalize_ms",
+                "total_ms",
+            }
+            assert all(value >= 0 for value in result["ingestion_timings"].values())
+
+        docx = results["docx"]
+        assert len(docx["employment_locators"]) == 2
+        assert len(docx["colleague_locators"]) == 2
+        assert all("paragraph" in locator for locator in docx["employment_locators"])
+        assert all("paragraph" in locator for locator in docx["colleague_locators"])
+        txt = results["txt"]
+        pdf = results["pdf"]
+        assert len(txt["employment_locators"]) == 1
+        assert len(pdf["employment_locators"]) == 1
+
+    asyncio.run(exercise())
+
+
+def test_model_visible_payload_is_identity_neutral_and_timings_are_content_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def compile_payload(
+        root: Path, filename: str, content: bytes
+    ) -> tuple[str, dict[str, Any]]:
+        proposal = named_subjects_proposal(("Avery Morgan", "entity", ()))
+        provider = ProposalProvider(proposal)
+        app = build_app(root, provider)
+        rebuild_calls = 0
+        lint_calls = 0
+        original_rebuild = WikiStore.rebuild_index
+        original_lint = WikiStore.lint
+
+        def counted_rebuild(store: WikiStore) -> tuple[Any, ...]:
+            nonlocal rebuild_calls
+            rebuild_calls += 1
+            return original_rebuild(store)
+
+        def counted_lint(store: WikiStore) -> Any:
+            nonlocal lint_calls
+            lint_calls += 1
+            return original_lint(store)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(WikiStore, "rebuild_index", counted_rebuild)
+            scoped.setattr(WikiStore, "lint", counted_lint)
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                _, compiled = await upload_and_compile(client, filename, content, "text/plain")
+        assert rebuild_calls == 1
+        assert lint_calls == 1
+        request_payload = provider.requests[0].messages[1].content
+        report = compiled["report"]
+        assert set(report["stage_timings"]) == {
+            "lock_wait_ms",
+            "batch_preparation_ms",
+            "provider_ms",
+            "validation_grounding_relationship_ms",
+            "merge_ms",
+            "transactional_write_ms",
+            "index_ms",
+            "lint_ms",
+            "manifest_and_log_ms",
+            "database_commit_ms",
+        }
+        assert all(value >= 0 for value in report["stage_timings"].values())
+        assert len(report["batches"]) == 1
+        assert report["batches"][0]["attempts"][0]["attempt"] == 1
+        assert filename not in json.dumps(report["stage_timings"])
+        return request_payload, report
+
+    async def exercise() -> None:
+        source = "Avery Morgan leads the operations review.\n"
+        first, _ = await compile_payload(tmp_path / "first", "first-name.txt", source.encode())
+        second, _ = await compile_payload(
+            tmp_path / "second",
+            "renamed-after-delete.txt",
+            b"\xef\xbb\xbf" + source.replace("\n", "\r\n").encode(),
+        )
+        assert first == second
+        assert "source_identity" not in first
+        assert "first-name.txt" not in first
+        assert "renamed-after-delete.txt" not in second
+
+    asyncio.run(exercise())
+
+
+def test_adjacent_docx_window_does_not_cross_an_unrelated_paragraph(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        document = OpenDocument()
+        for paragraph in (
+            "Fabrizio Bonaccorsi is an Italian web developer.",
+            "The garden paragraph discusses tomato seedlings.",
+            "He works at ABC Company.",
+        ):
+            document.add_paragraph(paragraph)
+        output = BytesIO()
+        document.save(output)
+        proposal = named_subjects_proposal(
+            ("Fabrizio Bonaccorsi", "entity", ()),
+            ("ABC Company", "entity", ()),
+        )
+        provider = ProposalProvider(proposal)
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            _, compiled = await upload_and_compile(
+                client,
+                "unrelated-gap.docx",
+                output.getvalue(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 0
+        assert graph["total_edges"] == 0
+        assert all(
+            not page.relationships
+            for _, page in WikiStore(app.state.settings.knowledge_path).page_snapshot()
+        )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    (
+        "Giuseppe La Terra and Federico La Terra are siblings.",
+        (
+            "Family records explicitly state that Giuseppe La Terra is the brother of "
+            "Federico La Terra."
+        ),
+    ),
+)
+def test_explicit_sibling_prose_recovers_one_provenance_backed_edge_and_is_idempotent(
+    tmp_path: Path, sentence: str
+) -> None:
+    async def exercise() -> None:
+        federico = named_subjects_proposal(("Federico La Terra", "entity", ("Federico",)))
+        family = named_subjects_proposal(
+            ("Giuseppe La Terra", "entity", ("Giuseppe",)),
+            ("Federico La Terra", "entity", ("Federico",)),
+        )
+        provider = ProposalProvider(federico, family, family)
+        app = build_app(tmp_path, provider)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "federico.md",
+                b"Federico La Terra is a software developer.",
+            )
+            uploaded, compiled = await upload_and_compile(
+                client,
+                "family.md",
+                sentence.encode(),
+            )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+            repeated = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+            wiki_before_reprocess = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
+            reprocessed = await client.post(
+                f"/api/v1/ingestion-jobs/{uploaded['ingestion_job_id']}/reprocess"
+            )
+            recompiled = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 1
+        assert any(
+            "Relationship candidate accepted: type='sibling_of'" in warning
+            for warning in compiled["report"]["warnings"]
+        )
+        store = WikiStore(app.state.settings.knowledge_path)
+        all_relationships = [
+            (page.title, relationship)
+            for _, page in store.page_snapshot()
+            for relationship in page.relationships
+        ]
+        assert len(all_relationships) == 1
+        source_title, relationship = all_relationships[0]
+        assert source_title == "Federico La Terra"
+        assert relationship.relation == "sibling_of"
+        assert relationship.target_title == "Giuseppe La Terra"
+        assert len(relationship.provenance) == 1
+        assert relationship.provenance[0].document_version_id == uploaded["document_version_id"]
+        assert graph["total_edges"] == 1
+        assert "sibling_of" in graph["edges"][0]["relations"]
+        assert repeated.json()["id"] == compiled["id"]
+        assert reprocessed.status_code == 200
+        assert recompiled.json()["status"] == "COMPLETED"
+        assert recompiled.json()["report"]["pages_created"] == []
+        assert recompiled.json()["report"]["pages_updated"] == []
+        wiki_after_reprocess = {
+            path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+            for path in app.state.settings.knowledge_path.rglob("*")
+            if path.is_file()
+        }
+        assert wiki_after_reprocess == wiki_before_reprocess
+        assert len(provider.requests) == 3
+        assert "Relationship taxonomy v1" in provider.requests[1].messages[0].content
+        assert "TOPIC is a broader thematic knowledge subject" in (
+            provider.requests[1].messages[0].content
+        )
+
+    asyncio.run(exercise())
+
+
+def test_negated_hypothetical_quoted_ambiguous_and_cooccurring_kinship_create_no_edge(
+    tmp_path: Path,
+) -> None:
+    unsafe_sentences = (
+        "Giuseppe La Terra and Federico La Terra are not siblings.",
+        "If Giuseppe La Terra and Federico La Terra were siblings, they would share a parent.",
+        'The note quotes "Giuseppe La Terra and Federico La Terra are siblings."',
+        "Whether Giuseppe La Terra and Federico La Terra are siblings is unknown.",
+        "Giuseppe La Terra met Federico La Terra at a conference.",
+    )
+
+    async def exercise() -> None:
+        proposal = named_subjects_proposal(
+            ("Giuseppe La Terra", "entity", ("Giuseppe",)),
+            ("Federico La Terra", "entity", ("Federico",)),
+            relationships={
+                "Giuseppe La Terra": [
+                    {
+                        "relation": "sibling_of",
+                        "target_title": "Federico La Terra",
+                        "source_record_ordinals": [1],
+                    }
+                ]
+            },
+        )
+        provider = ProposalProvider(*(proposal for _ in unsafe_sentences))
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for index, sentence in enumerate(unsafe_sentences, start=1):
+                _, compiled = await upload_and_compile(
+                    client, f"unsafe-family-{index}.md", sentence.encode()
+                )
+                assert compiled["status"] == "COMPLETED"
+                assert compiled["report"]["links_created"] == 0
+                assert any(
+                    "Relationship candidate skipped: type='sibling_of'" in warning
+                    for warning in compiled["report"]["warnings"]
+                )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+
+        assert graph["total_edges"] == 0
+        assert all(
+            not page.relationships
+            for _, page in WikiStore(app.state.settings.knowledge_path).page_snapshot()
+        )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("source", "subjects", "reason"),
+    (
+        (
+            (
+                "Fabrizio Bonaccorsi and Fabrizio Rossi are web developers. "
+                "Fabrizio was a colleague of Federico La Terra."
+            ),
+            (
+                ("Fabrizio Bonaccorsi", "entity", ()),
+                ("Fabrizio Rossi", "entity", ()),
+            ),
+            "ambiguous_short_reference",
+        ),
+        (
+            "Fabrizio Bonaccorsi met Marco Bianchi. He works at ABC Company.",
+            (
+                ("Fabrizio Bonaccorsi", "entity", ()),
+                ("Marco Bianchi", "entity", ()),
+                ("ABC Company", "entity", ()),
+            ),
+            "unresolved_pronoun",
+        ),
+    ),
+)
+def test_ambiguous_coreferences_emit_diagnostic_without_fabricating_edges(
+    tmp_path: Path,
+    source: str,
+    subjects: tuple[tuple[str, str, tuple[str, ...]], ...],
+    reason: str,
+) -> None:
+    async def exercise() -> None:
+        provider = ProposalProvider(
+            named_subjects_proposal(("Federico La Terra", "entity", ())),
+            named_subjects_proposal(*subjects),
+        )
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "federico.md",
+                b"Federico La Terra is a software developer.",
+            )
+            _, compiled = await upload_and_compile(client, "ambiguous.md", source.encode())
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 0
+        assert any(f"reason='{reason}'" in warning for warning in compiled["report"]["warnings"])
+        assert graph["total_edges"] == 0
+        assert all(
+            not page.relationships
+            for _, page in WikiStore(app.state.settings.knowledge_path).page_snapshot()
+        )
+
+    asyncio.run(exercise())
+
+
+def test_safelist_recovers_directional_relations_resolves_aliases_and_skips_unresolved(
+    tmp_path: Path,
+) -> None:
+    subjects = (
+        ("Avery Morgan", "entity", ("Avery",)),
+        ("Acme Corporation", "entity", ("ACME",)),
+        ("University of Malta", "entity", ()),
+        ("Project Atlas", "entity", ("Atlas",)),
+        ("Python", "concept", ()),
+        ("Valletta", "entity", ()),
+        ("Unrelated Garden", "topic", ()),
+    )
+    relation_subjects = (
+        ("Avery Morgan", "entity", ("Avery",)),
+        ("ACME", "entity", ("Acme Corporation",)),
+        ("University of Malta", "entity", ()),
+        ("Project Atlas", "entity", ("Atlas",)),
+        ("Python", "concept", ()),
+        ("Valletta", "entity", ()),
+    )
+    explicit = (
+        "Avery Morgan founded ACME. Avery Morgan owns ACME. Avery Morgan works at ACME. "
+        "Avery Morgan studied at University of Malta. "
+        "Project Atlas was created by Avery Morgan. Avery Morgan uses Python. "
+        "Avery Morgan lives in Valletta."
+    )
+    model_relationships: dict[str, list[dict[str, object]]] = {
+        "Avery Morgan": [
+            {
+                "relation": "works_for",
+                "target_title": "ACME",
+                "source_record_ordinals": [1],
+            },
+            {
+                "relation": "works_at",
+                "target_title": "Missing Organization",
+                "source_record_ordinals": [1],
+            },
+        ]
+    }
+
+    async def exercise() -> None:
+        provider = ProposalProvider(
+            named_subjects_proposal(*subjects),
+            named_subjects_proposal(*relation_subjects, relationships=model_relationships),
+        )
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            await upload_and_compile(
+                client,
+                "subjects.md",
+                (
+                    b"Avery Morgan, Acme Corporation (ACME), University of Malta, Project Atlas, "
+                    b"Python, Valletta, and Unrelated Garden are named subjects."
+                ),
+            )
+            garden_path = next(
+                path
+                for path in app.state.settings.knowledge_path.rglob("*.md")
+                if path.stem == "unrelated-garden"
+            )
+            garden_before = garden_path.read_bytes()
+            _, compiled = await upload_and_compile(
+                client, "explicit-relations.md", explicit.encode()
+            )
+            graph = (await client.get("/api/v1/wiki/graph")).json()
+
+        assert compiled["status"] == "COMPLETED"
+        assert compiled["report"]["links_created"] == 7
+        assert any(
+            "reason='unresolved_endpoint'" in warning for warning in compiled["report"]["warnings"]
+        )
+        store = WikiStore(app.state.settings.knowledge_path)
+        relations = {
+            (page.title, relationship.relation, relationship.target_title)
+            for _, page in store.page_snapshot()
+            for relationship in page.relationships
+        }
+        assert relations == {
+            ("Avery Morgan", "founder_of", "Acme Corporation"),
+            ("Avery Morgan", "lives_in", "Valletta"),
+            ("Avery Morgan", "owner_of", "Acme Corporation"),
+            ("Avery Morgan", "studied_at", "University of Malta"),
+            ("Avery Morgan", "uses_technology", "Python"),
+            ("Avery Morgan", "works_at", "Acme Corporation"),
+            ("Project Atlas", "created_by", "Avery Morgan"),
+        }
+        assert graph["total_edges"] == 5
+        assert garden_path.read_bytes() == garden_before
+
+    asyncio.run(exercise())
+
+
+def test_page_kind_guidance_preserves_distinct_entity_concept_and_topic_outputs(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        proposal = named_subjects_proposal(
+            ("Mira Chen", "entity", ()),
+            ("Least Privilege", "concept", ()),
+            ("Information Security", "topic", ()),
+        )
+        provider = ProposalProvider(proposal)
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            _, compiled = await upload_and_compile(
+                client,
+                "security.md",
+                (
+                    b"Mira Chen applies Least Privilege while documenting the broader "
+                    b"Information Security program."
+                ),
+            )
+            pages = (await client.get("/api/v1/wiki/pages")).json()
+
+        assert compiled["status"] == "COMPLETED"
+        assert {(page["title"], page["type"]) for page in pages} == {
+            ("Mira Chen", "entity"),
+            ("Least Privilege", "concept"),
+            ("Information Security", "topic"),
+        }
+        assert not list((app.state.settings.knowledge_path / "wiki" / "datasets").glob("*.md"))
+
+    asyncio.run(exercise())

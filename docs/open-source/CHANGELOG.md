@@ -8,6 +8,12 @@ and established interfaces.
 
 ### Added
 
+- Per-turn Wiki / Direct chat modes. Wiki remains the backwards-compatible default; Direct uses
+  the selected local model through the existing ADK/provider path with all retrieval tools and
+  schemas withheld.
+- Role-aware reconstruction of persisted chat history for multi-turn follow-ups, bounded recent-
+  turn retention at both supported context sizes, and automatic response-language matching with
+  explicit-language overrides.
 - GGUF-derived model context profiles, unified-memory startup preflight, per-model context
   overrides, and CLI diagnostics for advertised, configured, and effective context.
 - Provider-neutral prompt budgeting with bounded history/tool evidence and actionable context or
@@ -15,6 +21,11 @@ and established interfaces.
 
 ### Fixed
 
+- Ordinary chat no longer enters compulsory Wiki retrieval, while organization-specific questions
+  and co-referential follow-ups retain bounded owner-authorized grounding and citation handling.
+- Simple two-operand decimal expressions and terse arithmetic continuations now use a bounded
+  grammar. Follow-ups can consume a bare or uniquely emphasized preceding numeric answer without
+  `eval` or an unnecessary model/tool round trip.
 - Knowledge compilation now uses a bounded 300-second deadline per structured-output attempt,
   preserving its single context-safe truncation retry without inheriting ordinary chat's shorter
   deadline. Slower healthy systems can override this response-read timeout through `.env` without

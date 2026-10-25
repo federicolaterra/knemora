@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -85,15 +86,26 @@ class IngestionService:
         declared_content_type: str | None,
         data: bytes,
         document_id: uuid.UUID | None = None,
+        upload_read_ms: float | None = None,
     ) -> IngestionResult:
+        total_started = time.monotonic()
+        timings: dict[str, float] = {}
+        if upload_read_ms is not None:
+            timings["upload_read_ms"] = max(0.0, upload_read_ms)
+        stage_started = time.monotonic()
         upload = validate_upload(
             filename=filename,
             declared_content_type=declared_content_type,
             data=data,
             settings=self.settings,
         )
+        timings["validation_ms"] = (time.monotonic() - stage_started) * 1000
+        stage_started = time.monotonic()
         checksum = hashlib.sha256(data).hexdigest()
+        timings["checksum_ms"] = (time.monotonic() - stage_started) * 1000
+        stage_started = time.monotonic()
         duplicate = self._find_duplicate(owner.id, checksum)
+        timings["duplicate_lookup_ms"] = (time.monotonic() - stage_started) * 1000
         if duplicate is not None:
             version, job, document = duplicate
             self._audit(
@@ -186,19 +198,31 @@ class IngestionService:
         self._audit(
             owner.id, "source.uploaded", "document_version", version.id, {"sha256": checksum}
         )
+        stage_started = time.monotonic()
         self.session.commit()
+        timings["database_commit_ms"] = (time.monotonic() - stage_started) * 1000
 
         try:
             self._transition(job, IngestionStatus.VALIDATING)
             self._transition(job, IngestionStatus.STORING)
+            stage_started = time.monotonic()
             self.storage.store_original(
                 path=paths["original"],
                 data=data,
                 processing=self._processing_payload(job, version),
             )
+            timings["storage_ms"] = (time.monotonic() - stage_started) * 1000
             job.last_completed_stage = IngestionStatus.STORING
             self.session.commit()
-            self._process(owner=owner, document=document, version=version, job=job, upload=upload)
+            self._process(
+                owner=owner,
+                document=document,
+                version=version,
+                job=job,
+                upload=upload,
+                timings=timings,
+                total_started=total_started,
+            )
         except Exception as exc:
             self._mark_failed(owner.id, job.id, version.id, exc)
             job = self.session.get(IngestionJob, job.id) or job
@@ -235,6 +259,7 @@ class IngestionService:
     def _reprocess(
         self, *, owner: User, job_id: uuid.UUID, allow_completed: bool
     ) -> IngestionResult:
+        total_started = time.monotonic()
         job, version = self.get_job(owner_id=owner.id, job_id=job_id)
         if job.status == IngestionStatus.READY_FOR_COMPILATION and not allow_completed:
             raise IngestionRetryConflictError("A completed ingestion job cannot be retried.")
@@ -259,7 +284,14 @@ class IngestionService:
             job.status = IngestionStatus.VALIDATING
             self._audit(owner.id, "ingestion.retried", "ingestion_job", job.id, {})
             self.session.commit()
-            self._process(owner=owner, document=document, version=version, job=job, upload=upload)
+            self._process(
+                owner=owner,
+                document=document,
+                version=version,
+                job=job,
+                upload=upload,
+                total_started=total_started,
+            )
             self._invalidate_compilation(owner_id=owner.id, version_id=version.id)
         except Exception as exc:
             self._mark_failed(owner.id, job.id, version.id, exc)
@@ -280,12 +312,18 @@ class IngestionService:
         version: DocumentVersion,
         job: IngestionJob,
         upload: ValidatedUpload,
+        timings: dict[str, float] | None = None,
+        total_started: float | None = None,
     ) -> None:
+        timings = dict(timings or {})
         self._transition(job, IngestionStatus.PARSING)
+        stage_started = time.monotonic()
         parsed = self.parsers.parse(upload)
+        timings["parse_ms"] = (time.monotonic() - stage_started) * 1000
         job.last_completed_stage = IngestionStatus.PARSING
         self.session.commit()
         self._transition(job, IngestionStatus.NORMALIZING)
+        stage_started = time.monotonic()
         markdown = render_extracted_markdown(parsed)
         existing_records = {
             record.ordinal: record
@@ -342,6 +380,9 @@ class IngestionService:
         }
         processing_metadata = dict(job.processing_metadata or {})
         processing_metadata["active_source_record_ids"] = [str(record.id) for record in records]
+        timings["normalize_ms"] = (time.monotonic() - stage_started) * 1000
+        processing_metadata["source_record_count"] = len(records)
+        processing_metadata["timings_ms"] = dict(timings)
         job.processing_metadata = processing_metadata
         job.last_completed_stage = IngestionStatus.NORMALIZING
         self.session.commit()
@@ -354,6 +395,22 @@ class IngestionService:
             {"source_record_count": len(records)},
         )
         self.session.commit()
+        if total_started is not None:
+            timings["total_ms"] = (time.monotonic() - total_started) * 1000
+        processing_metadata = dict(job.processing_metadata or {})
+        processing_metadata["timings_ms"] = dict(timings)
+        job.processing_metadata = processing_metadata
+        self.session.commit()
+        logger.info(
+            "ingestion_stage_summary",
+            extra={
+                "knemora_fields": {
+                    "document_version_id": str(version.id),
+                    "source_record_count": len(records),
+                    "timings_ms": timings,
+                }
+            },
+        )
         self.storage.write_processing(
             self.storage.resolve_relative(job.processing_uri),
             self._processing_payload(job, version),
@@ -496,6 +553,8 @@ class IngestionService:
             "started_at": job.started_at.isoformat() if job.started_at else None,
             "finished_at": job.finished_at.isoformat() if job.finished_at else None,
             "history": job.processing_metadata.get("history", []),
+            "source_record_count": job.processing_metadata.get("source_record_count"),
+            "timings_ms": job.processing_metadata.get("timings_ms", {}),
         }
 
     @staticmethod

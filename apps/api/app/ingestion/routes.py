@@ -1,6 +1,7 @@
 """FastAPI routes for source upload, job observation, and retry."""
 
 import hashlib
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime
@@ -223,7 +224,9 @@ def create_ingestion_router(settings: Settings) -> APIRouter:
         ensure_workspace_writable(settings)
         if file.filename is None:
             raise IngestionRequestError("A filename is required.")
+        upload_started = time.monotonic()
         data = await _read_bounded(file, settings.max_upload_bytes)
+        upload_read_ms = (time.monotonic() - upload_started) * 1000
         service = IngestionService(session=session, settings=settings)
         owner = session.get(User, principal.user_id)
         if owner is None:
@@ -234,6 +237,7 @@ def create_ingestion_router(settings: Settings) -> APIRouter:
             declared_content_type=file.content_type,
             data=data,
             document_id=document_id,
+            upload_read_ms=upload_read_ms,
         )
         result_response = _response(
             version=result.version,

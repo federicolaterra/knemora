@@ -228,21 +228,25 @@ def test_history_is_removed_before_request_and_current_turn_overflow_is_explaine
     request = ChatRequest(
         messages=(
             ChatMessage(role="system", content="system"),
-            ChatMessage(
-                role="user",
-                content=(
-                    "The following is prior conversation data.\n"
-                    + ("old transcript " * 1000)
-                    + "\n[CURRENT USER] current question"
-                ),
-            ),
+            ChatMessage(role="user", content="old question " * 700),
+            ChatMessage(role="assistant", content="old answer " * 700),
+            ChatMessage(role="user", content="recent subject"),
+            ChatMessage(role="assistant", content="recent answer"),
+            ChatMessage(role="user", content="current question"),
         ),
         tools=tools,
         max_tokens=512,
     )
     fitted = fit_request_to_context(request, 4096)
-    assert "old transcript" not in fitted.messages[1].content
-    assert "current question" in fitted.messages[1].content
+    assert all("old question" not in message.content for message in fitted.messages)
+    assert all("old answer" not in message.content for message in fitted.messages)
+    assert [message.role for message in fitted.messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert fitted.messages[-1].content == "current question"
 
     oversized = request.model_copy(
         update={
@@ -254,6 +258,29 @@ def test_history_is_removed_before_request_and_current_turn_overflow_is_explaine
     )
     with pytest.raises(LLMContextOverflowError, match="effective 4,096-token context"):
         fit_request_to_context(oversized, 4096)
+
+
+def test_context_budgets_preserve_current_and_most_recent_turns() -> None:
+    messages: list[ChatMessage] = [ChatMessage(role="system", content="policy" * 100)]
+    for index in range(4):
+        messages.extend(
+            (
+                ChatMessage(role="user", content=f"question-{index} " * 120),
+                ChatMessage(role="assistant", content=f"answer-{index} " * 120),
+            )
+        )
+    messages.append(ChatMessage(role="user", content="current follow-up"))
+    request = ChatRequest(messages=tuple(messages), max_tokens=1024)
+
+    at_8192 = fit_request_to_context(request, 8192)
+    at_4096 = fit_request_to_context(request, 4096)
+
+    assert at_8192.messages == request.messages
+    assert at_4096.messages[-1].content == "current follow-up"
+    assert [message.content for message in at_4096.messages].count("current follow-up") == 1
+    assert any("question-3" in message.content for message in at_4096.messages)
+    assert not any("question-0" in message.content for message in at_4096.messages)
+    assert at_4096.messages[0].role == "system"
 
 
 def test_same_model_context_change_keeps_prior_selection_for_runtime_rollback(

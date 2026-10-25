@@ -5,6 +5,8 @@ export interface ProblemDetail {
   request_id?: string;
 }
 
+export type ResponseMode = "wiki" | "direct";
+
 export interface SystemMetadata {
   product: {
     name: string;

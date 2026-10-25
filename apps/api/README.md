@@ -61,3 +61,14 @@ repository-root `./knemora --dev adk-web` command starts the official ADK develo
 same package and environment. Tests inject fake LLM/search providers and never require the real
 model or internet. Implementation and contributor guidance is in the public
 [development guide](../../docs/open-source/development.md).
+
+SQLite remains authoritative for chat history. Each request reconstructs the fresh ADK session
+from owner-scoped persisted messages with native user/assistant roles, then appends the current
+user message once. Context budgeting removes the oldest complete turns first and retains the
+current turn, system policy, and recent continuity. Ordinary conversation uses automatic tool
+selection; organization-specific questions and co-referential follow-ups enter bounded Wiki
+retrieval. Replies follow the current user's language by default, explicit language requests win,
+and language-neutral follow-ups inherit the established conversation language when possible.
+Simple two-operand expressions and operator-led arithmetic follow-ups are evaluated with bounded
+decimal operations. Follow-ups accept a bare or uniquely emphasized preceding numeric answer; they
+do not execute model-generated code or `eval`.

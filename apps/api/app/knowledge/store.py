@@ -9,9 +9,11 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import unicodedata
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +39,14 @@ from app.knowledge.types import (
 FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WikiApplyResult:
+    lint: WikiLintReport
+    write_duration_ms: float
+    index_duration_ms: float
+    lint_duration_ms: float
 
 
 def normalize_name(value: str) -> str:
@@ -477,6 +487,13 @@ class WikiStore:
     def apply_pages_transactionally(self, pages: Sequence[WikiPage]) -> WikiLintReport:
         """Apply a batch and roll the filesystem back if validation or indexing fails."""
 
+        return self.apply_pages_transactionally_with_metrics(pages).lint
+
+    def apply_pages_transactionally_with_metrics(
+        self, pages: Sequence[WikiPage]
+    ) -> WikiApplyResult:
+        """Apply once and expose content-free timings for the authoritative transaction."""
+
         self.initialize()
         loaded = self._load_pages()
         existing_by_id = {page.id: (path, page) for path, page in loaded}
@@ -506,19 +523,30 @@ class WikiStore:
         before = {path: path.read_bytes() for path in managed if path.exists()}
         before_page_paths = set(self._page_files())
         try:
+            write_started = time.monotonic()
             for page in pages:
                 target = self._path_for(page)
                 self._write_page(target, page)
                 existing = existing_by_id.get(page.id)
                 if existing is not None and existing[0] != target:
                     existing[0].unlink()
+            write_duration_ms = (time.monotonic() - write_started) * 1000
+            index_started = time.monotonic()
             self.rebuild_index()
+            index_duration_ms = (time.monotonic() - index_started) * 1000
+            lint_started = time.monotonic()
             report = self.lint()
+            lint_duration_ms = (time.monotonic() - lint_started) * 1000
             if report.errors:
                 raise WikiValidationError(
                     f"Wiki lint reported {report.errors} error(s); changes were rolled back."
                 )
-            return report
+            return WikiApplyResult(
+                lint=report,
+                write_duration_ms=write_duration_ms,
+                index_duration_ms=index_duration_ms,
+                lint_duration_ms=lint_duration_ms,
+            )
         except Exception:
             for path in set(self._page_files()) - before_page_paths:
                 path.unlink(missing_ok=True)
