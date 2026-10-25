@@ -260,11 +260,9 @@ def relationship_prompt_guidance() -> str:
     symmetric = ", ".join(item.name for item in RELATIONSHIP_TYPES if item.symmetric)
     return (
         f"Relationship taxonomy v{RELATIONSHIP_TAXONOMY_VERSION}: {vocabulary}. "
-        f"Use these exact labels when applicable. {symmetric} are symmetric: propose one edge "
-        "only. Keep direction exactly as named for other labels. Create a relationship only when "
-        "the cited source span explicitly names both endpoints and states the relation as fact. "
-        "Historical colleague statements use colleague_of; preserve their tense in the claim and "
-        "evidence rather than asserting that the people are current colleagues. "
-        "Do not infer one from co-occurrence, topics, filenames, labels, quotations, negation, "
-        "hypotheticals, ambiguity, or former/current status that the label cannot represent."
+        f"Use exact labels. Symmetric (emit once): {symmetric}. Other labels keep their named "
+        "direction. A cited span must name both endpoints and assert the relation as fact. "
+        "Historical colleagues use colleague_of while the fact text keeps its tense. Reject "
+        "co-occurrence, metadata, quoted/negated/hypothetical/ambiguous claims, and former status "
+        "for current-only labels."
     )

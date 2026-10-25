@@ -5,6 +5,7 @@ from app.knowledge.compiler import KnowledgeCompiler
 from app.knowledge.search import BM25WikiSearch, WikiRetrievalService
 from app.knowledge.store import WikiStore
 from app.knowledge.types import (
+    CompactKnowledgeProposal,
     CompilationReport,
     KnowledgeProposal,
     PageKind,
@@ -14,6 +15,7 @@ from app.knowledge.types import (
 
 __all__ = [
     "CompilationReport",
+    "CompactKnowledgeProposal",
     "BM25WikiSearch",
     "DatasetAnalysisRequest",
     "DatasetAnalysisService",

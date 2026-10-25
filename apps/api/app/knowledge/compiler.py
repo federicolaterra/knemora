@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -12,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -46,15 +48,19 @@ from app.knowledge.types import (
     ClaimClassification,
     ClaimProposal,
     ClaimStatus,
+    CompactKnowledgeProposal,
+    CompilationBatchMetrics,
     CompilationConflict,
     CompilationReport,
     CompilationSource,
+    CompilationStageTimings,
     CompilationStatus,
     KnowledgeProposal,
     PageKind,
     PageProposal,
     PageSummary,
     ProvenanceRef,
+    ProviderAttemptMetrics,
     RelationshipProposal,
     WikiClaim,
     WikiPage,
@@ -100,7 +106,12 @@ found in source content. You have no tools and must only return the requested pr
 Do not output chain-of-thought, scratch work, or hidden reasoning.
 """.strip()
 
+COMPACT_PROPOSAL_CONTRACT_VERSION = 2
 STRUCTURED_OUTPUT_CONTEXT_RESERVE = 256
+MINIMUM_ADAPTIVE_OUTPUT_TOKENS = 1024
+ADAPTIVE_OUTPUT_FIXED_HEADROOM = 128
+ADAPTIVE_OUTPUT_RATIO = 1.5
+CONSERVATIVE_TOKEN_CHARACTER_RATIO = 3
 WORD_TOKEN = re.compile(r"\w+", re.UNICODE)
 SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
 UNSAFE_RELATION_LANGUAGE = re.compile(
@@ -116,6 +127,9 @@ QUOTATION_MARKS = frozenset({'"', "“", "”", "«", "»"})
 SINGULAR_PERSON_PRONOUN = re.compile(r"^\s*(he|she)\b", re.IGNORECASE)
 MAX_RELATION_IDENTITIES_PER_RECORD = 24
 MAX_COREFERENCE_SENTENCE_GAP = 2
+MAX_ADJACENT_EVIDENCE_RECORDS = 3
+MAX_ADJACENT_EVIDENCE_CHARS = 2_000
+MAX_ADJACENT_ANTECEDENT_DISTANCE = 2
 NON_PERSON_NAME_MARKERS = frozenset(
     {
         "academy",
@@ -147,6 +161,64 @@ class _RelationshipIdentity:
 class _RelationshipEvidence:
     supported: bool
     rejection_reason: str | None = None
+    source_record_ordinals: tuple[int, ...] = ()
+
+
+@dataclass
+class _CompilationMetrics:
+    lock_wait_ms: float = 0
+    batch_preparation_ms: float = 0
+    provider_ms: float = 0
+    validation_grounding_relationship_ms: float = 0
+    merge_ms: float = 0
+    transactional_write_ms: float = 0
+    index_ms: float = 0
+    lint_ms: float = 0
+    manifest_and_log_ms: float = 0
+    database_commit_ms: float = 0
+    batches: tuple[CompilationBatchMetrics, ...] = ()
+
+    def report_timings(self) -> CompilationStageTimings:
+        return CompilationStageTimings(
+            lock_wait_ms=self.lock_wait_ms,
+            batch_preparation_ms=self.batch_preparation_ms,
+            provider_ms=self.provider_ms,
+            validation_grounding_relationship_ms=self.validation_grounding_relationship_ms,
+            merge_ms=self.merge_ms,
+            transactional_write_ms=self.transactional_write_ms,
+            index_ms=self.index_ms,
+            lint_ms=self.lint_ms,
+            manifest_and_log_ms=self.manifest_and_log_ms,
+            database_commit_ms=self.database_commit_ms,
+        )
+
+
+@dataclass(frozen=True)
+class _SuccessfulOutputSample:
+    source_character_count: int
+    completion_tokens: int
+
+
+def _compact_response_schema(value: Any) -> Any:
+    """Remove non-validating JSON Schema prose without changing its accepted instances."""
+
+    if isinstance(value, list):
+        return [_compact_response_schema(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_response_schema(item)
+            for key, item in value.items()
+            if key not in {"default", "description", "examples", "title"}
+        }
+    return value
+
+
+# Retained for isolated v2 experiments; normal compilation requests the v1 schema below.
+EXPERIMENTAL_COMPACT_PROPOSAL_RESPONSE_SCHEMA = cast(
+    dict[str, Any],
+    _compact_response_schema(CompactKnowledgeProposal.model_json_schema(by_alias=True)),
+)
+LEGACY_PROPOSAL_RESPONSE_SCHEMA = KnowledgeProposal.model_json_schema()
 
 
 def _unique_provenance(values: Sequence[ProvenanceRef]) -> tuple[ProvenanceRef, ...]:
@@ -175,6 +247,7 @@ class KnowledgeCompiler:
     async def compile(
         self, *, owner_id: uuid.UUID, document_version_id: uuid.UUID
     ) -> KnowledgeCompilationJob:
+        metrics = _CompilationMetrics()
         source = self._load_source(owner_id, document_version_id)
         document, version, records = source
         job = self.session.scalar(
@@ -208,43 +281,54 @@ class KnowledgeCompiler:
             if self._proposal_error_requires_reanalysis(previous_error):
                 job.proposal = None
                 job.last_completed_stage = None
-        self.session.commit()
+        self._timed_commit(metrics)
         started = time.monotonic()
 
         try:
+            lock_started = time.monotonic()
             with self.store.compilation_lock():
+                metrics.lock_wait_ms = (time.monotonic() - lock_started) * 1000
                 if job.proposal is None:
-                    self._transition(job, CompilationStatus.ANALYZING)
-                    proposal = await self._analyze(document, version, records)
+                    self._transition(job, CompilationStatus.ANALYZING, metrics=metrics)
+                    proposal, batches = await self._analyze(document, version, records, metrics)
+                    metrics.batches = batches
                     job.proposal = proposal.model_dump(mode="json")
                     job.last_completed_stage = CompilationStatus.ANALYZING
-                    self.session.commit()
+                    self._timed_commit(metrics)
                 else:
-                    proposal = KnowledgeProposal.model_validate(job.proposal)
+                    proposal, _ = self._expand_proposal_payload(job.proposal)
 
-                self._transition(job, CompilationStatus.VALIDATING)
+                self._transition(job, CompilationStatus.VALIDATING, metrics=metrics)
+                merge_started = time.monotonic()
                 pages, created_ids, links_created, conflicts, warnings = self._build_pages(
                     document, version, records, proposal
                 )
+                metrics.merge_ms += (time.monotonic() - merge_started) * 1000
                 job.last_completed_stage = CompilationStatus.VALIDATING
-                self.session.commit()
+                self._timed_commit(metrics)
 
                 self._require_source_active(owner_id, version.id)
-                self._transition(job, CompilationStatus.APPLYING)
-                lint = self.store.apply_pages_transactionally(pages) if pages else self.store.lint()
-                job.last_completed_stage = CompilationStatus.APPLYING
-                self.session.commit()
-
-                self._transition(job, CompilationStatus.INDEXING)
+                self._transition(job, CompilationStatus.APPLYING, metrics=metrics)
                 if pages:
-                    self.store.rebuild_index()
-                job.last_completed_stage = CompilationStatus.INDEXING
-                self.session.commit()
+                    applied = self.store.apply_pages_transactionally_with_metrics(pages)
+                    lint = applied.lint
+                    metrics.transactional_write_ms += applied.write_duration_ms
+                    metrics.index_ms += applied.index_duration_ms
+                    metrics.lint_ms += applied.lint_duration_ms
+                else:
+                    lint_started = time.monotonic()
+                    lint = self.store.lint()
+                    metrics.lint_ms += (time.monotonic() - lint_started) * 1000
+                job.last_completed_stage = CompilationStatus.APPLYING
+                self._timed_commit(metrics)
 
-                self._transition(job, CompilationStatus.LINTING)
-                lint = self.store.lint()
+                self._transition(job, CompilationStatus.INDEXING, metrics=metrics)
+                job.last_completed_stage = CompilationStatus.INDEXING
+                self._timed_commit(metrics)
+
+                self._transition(job, CompilationStatus.LINTING, metrics=metrics)
                 job.last_completed_stage = CompilationStatus.LINTING
-                self.session.commit()
+                self._timed_commit(metrics)
 
                 summaries = {item.id: item for item in self.store.list_pages()}
                 created = tuple(summaries[item.id] for item in pages if item.id in created_ids)
@@ -265,8 +349,11 @@ class KnowledgeCompiler:
                         provenanced_claims / total_claims if total_claims else 1.0
                     ),
                     duration_ms=int((time.monotonic() - started) * 1000),
+                    stage_timings=metrics.report_timings(),
+                    batches=metrics.batches,
                     lint=lint,
                 )
+                manifest_started = time.monotonic()
                 if pages:
                     self.store.write_source_manifest(
                         document_id=str(document.id),
@@ -288,6 +375,13 @@ class KnowledgeCompiler:
                     ],
                 )
                 self._record_changes(owner_id, job, pages, created_ids)
+                metrics.manifest_and_log_ms += (time.monotonic() - manifest_started) * 1000
+                report = report.model_copy(
+                    update={
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                        "stage_timings": metrics.report_timings(),
+                    }
+                )
                 job.report = report.model_dump(mode="json")
                 job.status = CompilationStatus.COMPLETED
                 job.last_completed_stage = CompilationStatus.LINTING
@@ -307,7 +401,15 @@ class KnowledgeCompiler:
                         },
                     )
                 )
-                self.session.commit()
+                self._timed_commit(metrics)
+                report = report.model_copy(
+                    update={
+                        "duration_ms": int((time.monotonic() - started) * 1000),
+                        "stage_timings": metrics.report_timings(),
+                    }
+                )
+                job.report = report.model_dump(mode="json")
+                self._timed_commit(metrics)
                 return job
         except asyncio.CancelledError as exc:
             self.session.rollback()
@@ -318,6 +420,7 @@ class KnowledgeCompiler:
                 owner_id=owner_id,
                 started=started,
                 exc=exc,
+                metrics=metrics,
             )
             raise
         except Exception as exc:
@@ -329,6 +432,7 @@ class KnowledgeCompiler:
                 owner_id=owner_id,
                 started=started,
                 exc=exc,
+                metrics=metrics,
             )
 
     def _record_failure(
@@ -340,6 +444,7 @@ class KnowledgeCompiler:
         owner_id: uuid.UUID,
         started: float,
         exc: BaseException,
+        metrics: _CompilationMetrics,
     ) -> KnowledgeCompilationJob:
         persisted = self.session.get(KnowledgeCompilationJob, job.id)
         if persisted is None:
@@ -350,7 +455,15 @@ class KnowledgeCompiler:
         persisted.status = CompilationStatus.FAILED
         persisted.error = error
         persisted.finished_at = datetime.now(UTC)
-        if isinstance(exc, (asyncio.CancelledError, InvalidKnowledgeProposalError)):
+        if isinstance(
+            exc,
+            (
+                asyncio.CancelledError,
+                InvalidKnowledgeProposalError,
+                LLMResponseError,
+                WikiConflictError,
+            ),
+        ):
             persisted.proposal = None
             persisted.last_completed_stage = None
         persisted.report = CompilationReport(
@@ -363,6 +476,8 @@ class KnowledgeCompiler:
             warnings=(),
             provenance_coverage=0,
             duration_ms=duration_ms,
+            stage_timings=metrics.report_timings(),
+            batches=metrics.batches,
             failures=(error,),
             lint=lint,
         ).model_dump(mode="json")
@@ -375,7 +490,7 @@ class KnowledgeCompiler:
                 payload={"document_version_id": str(version.id), "error": error},
             )
         )
-        self.session.commit()
+        self._timed_commit(metrics)
         logger.warning(
             "knowledge_compilation_failed",
             extra={
@@ -461,21 +576,22 @@ class KnowledgeCompiler:
         document: Document,
         version: DocumentVersion,
         records: tuple[SourceRecord, ...],
-    ) -> KnowledgeProposal:
+        metrics: _CompilationMetrics,
+    ) -> tuple[KnowledgeProposal, tuple[CompilationBatchMetrics, ...]]:
         proposals: list[KnowledgeProposal] = []
+        batch_metrics: list[CompilationBatchMetrics] = []
+        successful_outputs: list[_SuccessfulOutputSample] = []
         dataset = self.session.scalar(
             select(DatasetRecord).where(DatasetRecord.document_version_id == version.id)
         )
         existing_pages = [page for _, page in self.store.page_snapshot()]
+        batch_started = time.monotonic()
         batches = self._record_batches(records)
+        metrics.batch_preparation_ms += (time.monotonic() - batch_started) * 1000
         for batch_index, batch in enumerate(batches, start=1):
+            payload_started = time.monotonic()
+            source_character_count = sum(len(content) for _, content in batch)
             payload = {
-                "source_identity": {
-                    "document_id": str(document.id),
-                    "document_version_id": str(version.id),
-                    "original_filename": document.original_filename,
-                    "sha256": version.sha256,
-                },
                 "dataset_metadata": dataset.schema_metadata if dataset is not None else None,
                 # Resolution is deterministic after analysis. Keeping the catalog out of the
                 # model prompt prevents unrelated existing titles from priming its proposal.
@@ -489,19 +605,24 @@ class KnowledgeCompiler:
                     for record, content in batch
                 ],
             }
+            payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            metrics.batch_preparation_ms += (time.monotonic() - payload_started) * 1000
+            output_limit, budget_basis = self._initial_output_limit(
+                source_character_count=source_character_count,
+                successful_outputs=successful_outputs,
+            )
             request = ChatRequest(
                 messages=(
                     ChatMessage(role="system", content=SYSTEM_PROMPT),
                     ChatMessage(
                         role="user",
-                        content="UNTRUSTED_SOURCE_JSON\n"
-                        + json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                        content="UNTRUSTED_SOURCE_JSON\n" + payload_json,
                     ),
                 ),
                 temperature=0,
-                max_tokens=self.settings.knowledge_compilation_max_output_tokens,
+                max_tokens=output_limit,
                 timeout_seconds=self.settings.knowledge_compilation_timeout_seconds,
-                response_schema=KnowledgeProposal.model_json_schema(),
+                response_schema=LEGACY_PROPOSAL_RESPONSE_SCHEMA,
             )
             logger.info(
                 "knowledge_compilation_model_request",
@@ -511,17 +632,32 @@ class KnowledgeCompiler:
                         "batch": batch_index,
                         "batch_count": len(batches),
                         "source_record_count": len(batch),
-                        "source_character_count": sum(len(content) for _, content in batch),
+                        "source_character_count": source_character_count,
                         "max_tokens": request.max_tokens,
+                        "budget_basis": budget_basis,
+                        "proposal_contract_version": 1,
                         "timeout_seconds": request.timeout_seconds,
                         "retry": 0,
                     }
                 },
             )
+            attempts: list[ProviderAttemptMetrics] = []
+            provider_started = time.monotonic()
             response = await self.provider.chat(request)
+            provider_duration_ms = (time.monotonic() - provider_started) * 1000
+            metrics.provider_ms += provider_duration_ms
+            attempts.append(
+                self._provider_attempt_metrics(
+                    attempt=1,
+                    request=request,
+                    response=response,
+                    duration_ms=provider_duration_ms,
+                    budget_basis=budget_basis,
+                )
+            )
             if response.finish_reason == "length":
                 retry_limit = self._structured_output_retry_limit(request, response)
-                if retry_limit > request.max_tokens:
+                if len(attempts) == 1 and retry_limit > request.max_tokens:
                     logger.info(
                         "knowledge_compilation_model_retry",
                         extra={
@@ -536,22 +672,40 @@ class KnowledgeCompiler:
                             }
                         },
                     )
-                    response = await self.provider.chat(
-                        request.model_copy(update={"max_tokens": retry_limit})
+                    retry_request = request.model_copy(update={"max_tokens": retry_limit})
+                    provider_started = time.monotonic()
+                    response = await self.provider.chat(retry_request)
+                    provider_duration_ms = (time.monotonic() - provider_started) * 1000
+                    metrics.provider_ms += provider_duration_ms
+                    attempts.append(
+                        self._provider_attempt_metrics(
+                            attempt=2,
+                            request=retry_request,
+                            response=response,
+                            duration_ms=provider_duration_ms,
+                            retry_cause="length",
+                            budget_basis="length_retry",
+                        )
                     )
             if response.finish_reason == "length":
                 raise InvalidKnowledgeProposalError(
                     "Local model output exceeded the structured knowledge proposal token budget."
                 )
             try:
-                proposal = KnowledgeProposal.model_validate_json(response.message.content)
+                validation_started = time.monotonic()
+                proposal, proposal_contract_version = self._parse_model_proposal(
+                    response.message.content
+                )
+            except (TypeError, ValueError, ValidationError) as exc:
+                raise InvalidKnowledgeProposalError(
+                    "Local model output did not match the structured knowledge proposal schema."
+                ) from exc
+
+            try:
                 normalized = self._normalize_batch_ordinals(proposal, batch)
                 self._validate_existing_page_grounding(
                     normalized,
-                    record_tokens={
-                        record.ordinal: tuple(WORD_TOKEN.findall(normalize_name(content)))
-                        for record, content in batch
-                    },
+                    batch=batch,
                     existing_pages=existing_pages,
                 )
                 proposals.append(
@@ -561,10 +715,34 @@ class KnowledgeCompiler:
                         existing_pages=existing_pages,
                     )
                 )
-            except ValidationError as exc:
+                metrics.validation_grounding_relationship_ms += (
+                    time.monotonic() - validation_started
+                ) * 1000
+            except (TypeError, ValueError, ValidationError) as exc:
                 raise InvalidKnowledgeProposalError(
                     "Local model output did not match the structured knowledge proposal schema."
                 ) from exc
+            measured_completion_tokens = response.usage.completion_tokens or math.ceil(
+                len(response.message.content) / CONSERVATIVE_TOKEN_CHARACTER_RATIO
+            )
+            successful_outputs.append(
+                _SuccessfulOutputSample(
+                    source_character_count=source_character_count,
+                    completion_tokens=max(1, measured_completion_tokens),
+                )
+            )
+            batch_metrics.append(
+                CompilationBatchMetrics(
+                    batch=batch_index,
+                    batch_count=len(batches),
+                    source_record_count=len(batch),
+                    source_character_count=source_character_count,
+                    payload_character_count=len(payload_json),
+                    response_character_count=len(response.message.content),
+                    proposal_contract_version=proposal_contract_version,
+                    attempts=tuple(attempts),
+                )
+            )
         if dataset is not None:
             proposals.append(
                 KnowledgeProposal(
@@ -572,7 +750,77 @@ class KnowledgeCompiler:
                     warnings=(),
                 )
             )
-        return self._merge_proposals(proposals)
+        merge_started = time.monotonic()
+        merged = self._merge_proposals(proposals)
+        metrics.merge_ms += (time.monotonic() - merge_started) * 1000
+        return merged, tuple(batch_metrics)
+
+    @staticmethod
+    def _provider_attempt_metrics(
+        *,
+        attempt: int,
+        request: ChatRequest,
+        response: ChatResponse,
+        duration_ms: float,
+        retry_cause: str | None = None,
+        budget_basis: str | None = None,
+    ) -> ProviderAttemptMetrics:
+        return ProviderAttemptMetrics(
+            attempt=attempt,
+            max_output_tokens=request.max_tokens,
+            duration_ms=duration_ms,
+            prompt_tokens=response.usage.prompt_tokens,
+            completion_tokens=response.usage.completion_tokens,
+            total_tokens=response.usage.total_tokens,
+            finish_reason=response.finish_reason,
+            retry_cause=retry_cause,
+            budget_basis=budget_basis,
+        )
+
+    def _initial_output_limit(
+        self,
+        *,
+        source_character_count: int,
+        successful_outputs: Sequence[_SuccessfulOutputSample],
+    ) -> tuple[int, str]:
+        """Adapt only after a successful same-run response; never infer from model size."""
+
+        configured = self.settings.knowledge_compilation_max_output_tokens
+        context_tokens = self.provider.capabilities.max_context_tokens
+        if context_tokens is not None:
+            configured = min(configured, max(1, context_tokens // 2))
+        if not successful_outputs:
+            basis = (
+                "effective_context_bootstrap"
+                if configured < self.settings.knowledge_compilation_max_output_tokens
+                else "configured_bootstrap"
+            )
+            return configured, basis
+        tokens_per_character = max(
+            sample.completion_tokens / max(1, sample.source_character_count)
+            for sample in successful_outputs
+        )
+        measured_requirement = math.ceil(
+            ADAPTIVE_OUTPUT_FIXED_HEADROOM
+            + source_character_count * tokens_per_character * ADAPTIVE_OUTPUT_RATIO
+        )
+        adaptive = min(
+            configured,
+            max(MINIMUM_ADAPTIVE_OUTPUT_TOKENS, measured_requirement),
+        )
+        basis = "measured_task_requirements" if adaptive < configured else "configured_ceiling"
+        return adaptive, basis
+
+    @staticmethod
+    def _expand_proposal_payload(payload: object) -> tuple[KnowledgeProposal, int]:
+        if isinstance(payload, dict) and payload.get("v") == COMPACT_PROPOSAL_CONTRACT_VERSION:
+            compact = CompactKnowledgeProposal.model_validate(payload)
+            return compact.expand(), compact.contract_version
+        return KnowledgeProposal.model_validate(payload), 1
+
+    @staticmethod
+    def _parse_model_proposal(content: str) -> tuple[KnowledgeProposal, int]:
+        return KnowledgeProposal.model_validate_json(content), 1
 
     @staticmethod
     def _proposal_error_requires_reanalysis(error: str | None) -> bool:
@@ -581,6 +829,8 @@ class KnowledgeCompiler:
         return error.startswith(
             (
                 "Local model output",
+                "Knowledge compilation failed because the local model returned an invalid response",
+                "Knowledge compilation failed: WikiConflictError",
                 "Knowledge proposal referenced unknown source record ordinals",
                 "Knowledge proposal attempted to update existing pages not named",
             )
@@ -590,7 +840,7 @@ class KnowledgeCompiler:
     def _validate_existing_page_grounding(
         proposal: KnowledgeProposal,
         *,
-        record_tokens: dict[int, tuple[str, ...]],
+        batch: tuple[tuple[SourceRecord, str], ...],
         existing_pages: Sequence[WikiPage],
     ) -> None:
         """Reject model attempts to attach a new source to unrelated existing pages."""
@@ -601,6 +851,10 @@ class KnowledgeCompiler:
             for name in (page.title, *page.aliases)
         }
         ungrounded: set[str] = set()
+        records_by_ordinal = {record.ordinal: (record, content) for record, content in batch}
+        all_identity_names = tuple((page.title, *page.aliases) for page in existing_pages) + tuple(
+            (page.title, *page.aliases) for page in proposal.pages
+        )
         for candidate in proposal.pages:
             existing = next(
                 (
@@ -620,9 +874,12 @@ class KnowledgeCompiler:
                 for ordinal in relationship.source_record_ordinals
             }
             if not referenced_ordinals or any(
-                not any(
-                    KnowledgeCompiler._contains_identity(record_tokens.get(ordinal, ()), name)
-                    for name in (existing.title, *existing.aliases)
+                not KnowledgeCompiler._record_grounded_by_identity(
+                    ordinal=ordinal,
+                    identity_names=(existing.title, *existing.aliases),
+                    all_identity_names=all_identity_names,
+                    batch=batch,
+                    records_by_ordinal=records_by_ordinal,
                 )
                 for ordinal in referenced_ordinals
             ):
@@ -633,6 +890,73 @@ class KnowledgeCompiler:
                 "Knowledge proposal attempted to update existing pages not named in source "
                 f"records: {titles}."
             )
+
+    @classmethod
+    def _record_grounded_by_identity(
+        cls,
+        *,
+        ordinal: int,
+        identity_names: tuple[str, ...],
+        all_identity_names: Sequence[tuple[str, ...]],
+        batch: tuple[tuple[SourceRecord, str], ...],
+        records_by_ordinal: dict[int, tuple[SourceRecord, str]],
+    ) -> bool:
+        current = records_by_ordinal.get(ordinal)
+        if current is None:
+            return False
+        current_tokens = tuple(WORD_TOKEN.findall(normalize_name(current[1])))
+        if any(cls._contains_identity(current_tokens, name) for name in identity_names):
+            return True
+
+        short = WORD_TOKEN.findall(normalize_name(identity_names[0]))[:1]
+        short_name = short[0] if short else None
+        short_owners = {
+            names[0]
+            for names in all_identity_names
+            if names and WORD_TOKEN.findall(normalize_name(names[0]))[:1] == short
+        }
+        current_continues = SINGULAR_PERSON_PRONOUN.match(current[1]) is not None or (
+            short_name is not None
+            and len(short_owners) == 1
+            and re.search(rf"^\s*{re.escape(short_name)}(?!\w)", current[1], re.IGNORECASE)
+            is not None
+        )
+        if not current_continues:
+            return False
+
+        for window in cls._relationship_evidence_windows(batch):
+            if len(window) < 2 or window[-1][0].ordinal != ordinal:
+                continue
+            first_tokens = tuple(WORD_TOKEN.findall(normalize_name(window[0][1])))
+            if not any(cls._contains_identity(first_tokens, name) for name in identity_names):
+                continue
+            other_people = tuple(
+                names
+                for names in all_identity_names
+                if names != identity_names
+                and len(WORD_TOKEN.findall(names[0])) >= 2
+                and not NON_PERSON_NAME_MARKERS.intersection(
+                    token.casefold() for token in WORD_TOKEN.findall(names[0])
+                )
+            )
+            if any(
+                cls._contains_named_text(content, name)
+                for _, content in window[:-1]
+                for names in other_people
+                for name in names
+            ):
+                continue
+            if all(
+                SINGULAR_PERSON_PRONOUN.match(content) is not None
+                or (
+                    short_name is not None
+                    and re.search(rf"^\s*{re.escape(short_name)}(?!\w)", content, re.IGNORECASE)
+                    is not None
+                )
+                for _, content in window[1:]
+            ):
+                return True
+        return False
 
     @staticmethod
     def _contains_identity(source_tokens: tuple[str, ...], identity: str) -> bool:
@@ -702,7 +1026,7 @@ class KnowledgeCompiler:
         """Validate known relationships and recover only explicit, resolvable facts."""
 
         identities, identity_by_name = cls._relationship_identities(proposal, existing_pages)
-        content_by_ordinal = {record.ordinal: content for record, content in batch}
+        records_by_ordinal = {record.ordinal: (record, content) for record, content in batch}
         warnings = list(proposal.warnings)
         relationships_by_page: list[list[RelationshipProposal]] = [[] for _ in proposal.pages]
         seen: set[tuple[int, str, str, tuple[int, ...]]] = set()
@@ -803,7 +1127,28 @@ class KnowledgeCompiler:
                         report=True,
                     )
                     continue
-                supported_ordinals: list[int] = []
+                cited_records = tuple(
+                    records_by_ordinal[ordinal]
+                    for ordinal in relationship.source_record_ordinals
+                    if ordinal in records_by_ordinal
+                )
+                evidence_windows = cls._relationship_evidence_windows(cited_records)
+                evidence = next(
+                    (
+                        result
+                        for window in evidence_windows
+                        if (
+                            result := cls._relationship_evidence(
+                                tuple((record.ordinal, content) for record, content in window),
+                                kind,
+                                source_identity,
+                                target_identity,
+                                identities,
+                            )
+                        ).supported
+                    ),
+                    None,
+                )
                 for ordinal in relationship.source_record_ordinals:
                     diagnostic(
                         relation=kind.name,
@@ -811,25 +1156,15 @@ class KnowledgeCompiler:
                         outcome="found",
                         origin="model_proposal",
                     )
-                    evidence = cls._relationship_evidence(
-                        content_by_ordinal[ordinal],
-                        kind,
-                        source_identity,
-                        target_identity,
-                        identities,
+                if evidence is None:
+                    diagnostic(
+                        relation=kind.name,
+                        ordinal=relationship.source_record_ordinals[0],
+                        outcome="skipped",
+                        origin="model_proposal",
+                        reason="unsupported_evidence",
+                        report=True,
                     )
-                    if evidence.supported:
-                        supported_ordinals.append(ordinal)
-                    else:
-                        diagnostic(
-                            relation=kind.name,
-                            ordinal=ordinal,
-                            outcome="skipped",
-                            origin="model_proposal",
-                            reason=evidence.rejection_reason or "unsupported_evidence",
-                            report=True,
-                        )
-                if not supported_ordinals:
                     continue
                 attach_index = page_index
                 endpoint = target_identity
@@ -847,14 +1182,16 @@ class KnowledgeCompiler:
                         update={
                             "relation": kind.name,
                             "target_title": endpoint.title,
-                            "source_record_ordinals": tuple(supported_ordinals),
+                            "source_record_ordinals": evidence.source_record_ordinals,
                         }
                     ),
                     recovered=False,
                 )
 
-        for record, content in batch:
-            mentioned = cls._mentioned_identities(content, identities)
+        for evidence_window in cls._relationship_evidence_windows(batch):
+            record, content = evidence_window[-1]
+            window_content = "\n".join(item_content for _, item_content in evidence_window)
+            mentioned = cls._mentioned_identities(window_content, identities)
             if len(mentioned) > MAX_RELATION_IDENTITIES_PER_RECORD:
                 warnings.append(
                     f"Skipped deterministic relationship recovery for source record ordinal "
@@ -872,7 +1209,14 @@ class KnowledgeCompiler:
                     target = identities[target_key]
                     for kind in RELATIONSHIP_TYPES:
                         evidence = cls._relationship_evidence(
-                            content, kind, source, target, identities
+                            tuple(
+                                (item_record.ordinal, item_content)
+                                for item_record, item_content in evidence_window
+                            ),
+                            kind,
+                            source,
+                            target,
+                            identities,
                         )
                         if not evidence.supported:
                             if evidence.rejection_reason is not None:
@@ -897,7 +1241,7 @@ class KnowledgeCompiler:
                         relationship = RelationshipProposal(
                             relation=kind.name,
                             target_title=endpoint.title,
-                            source_record_ordinals=(record.ordinal,),
+                            source_record_ordinals=evidence.source_record_ordinals,
                         )
                         if (
                             attach.proposal_indexes[0],
@@ -1035,9 +1379,49 @@ class KnowledgeCompiler:
         )
 
     @classmethod
+    def _relationship_evidence_windows(
+        cls, records: Sequence[tuple[SourceRecord, str]]
+    ) -> tuple[tuple[tuple[SourceRecord, str], ...], ...]:
+        """Return bounded DOCX paragraph windows without changing source records."""
+
+        ordered = tuple(sorted(records, key=lambda item: item[0].ordinal))
+        windows: list[tuple[tuple[SourceRecord, str], ...]] = []
+        for end in range(len(ordered)):
+            windows.append((ordered[end],))
+            for size in range(2, MAX_ADJACENT_EVIDENCE_RECORDS + 1):
+                start = end - size + 1
+                if start < 0:
+                    break
+                candidate = ordered[start : end + 1]
+                if sum(len(content) for _, content in candidate) > MAX_ADJACENT_EVIDENCE_CHARS:
+                    break
+                if not cls._adjacent_records_compatible(candidate):
+                    break
+                windows.append(candidate)
+        return tuple(windows)
+
+    @staticmethod
+    def _adjacent_records_compatible(
+        records: Sequence[tuple[SourceRecord, str]],
+    ) -> bool:
+        first = records[0][0]
+        first_section = tuple(str(item) for item in first.locator.get("section", ()))
+        for offset, (record, _) in enumerate(records):
+            if record.document_version_id != first.document_version_id:
+                return False
+            if record.ordinal != first.ordinal + offset:
+                return False
+            if "paragraph" not in record.locator or "table" in record.locator:
+                return False
+            section = tuple(str(item) for item in record.locator.get("section", ()))
+            if section != first_section:
+                return False
+        return records[-1][0].ordinal - first.ordinal <= MAX_ADJACENT_ANTECEDENT_DISTANCE
+
+    @classmethod
     def _relationship_evidence(
         cls,
-        content: str,
+        evidence_records: Sequence[tuple[int, str]],
         kind: RelationshipType,
         source: _RelationshipIdentity,
         target: _RelationshipIdentity,
@@ -1056,13 +1440,38 @@ class KnowledgeCompiler:
                 short_owners.setdefault(normalize_name(short), set()).add(identity.key)
 
         introduced: set[str] = set()
+        introduced_at: dict[str, int] = {}
         antecedent: str | None = None
         antecedent_index = -MAX_COREFERENCE_SENTENCE_GAP - 1
         rejection_reason: str | None = None
-        sentences = [sentence.strip() for sentence in SENTENCE_BOUNDARY.split(content)]
-        for sentence_index, sentence in enumerate(sentences):
+        sentences: list[tuple[int, str, bool]] = []
+        for ordinal, content in evidence_records:
+            record_sentences = [
+                sentence.strip()
+                for sentence in SENTENCE_BOUNDARY.split(content)
+                if sentence.strip()
+            ]
+            sentences.extend(
+                (ordinal, sentence, index == 0) for index, sentence in enumerate(record_sentences)
+            )
+        for sentence_index, (ordinal, sentence, first_in_record) in enumerate(sentences):
             if not sentence.strip():
                 continue
+
+            if first_in_record and sentence_index > 0 and introduced:
+                resolved_leads = tuple(
+                    name
+                    for key in introduced
+                    for name in cls._resolved_reference_names(
+                        identities[key], introduced, name_owners, short_owners, short_forms
+                    )[0]
+                    if re.search(rf"^\s*{re.escape(name)}(?!\w)", sentence, re.IGNORECASE)
+                )
+                pronoun_lead = SINGULAR_PERSON_PRONOUN.match(sentence) is not None
+                if not resolved_leads and not (pronoun_lead and antecedent is not None):
+                    introduced.clear()
+                    introduced_at.clear()
+                    antecedent = None
 
             source_names, source_ambiguous = cls._resolved_reference_names(
                 source, introduced, name_owners, short_owners, short_forms
@@ -1094,7 +1503,20 @@ class KnowledgeCompiler:
                 elif not kind.durable and FORMER_RELATION_LANGUAGE.search(sentence):
                     rejection_reason = rejection_reason or "historical_status_not_representable"
                 else:
-                    return _RelationshipEvidence(supported=True)
+                    supporting = {ordinal}
+                    for identity in (source, target):
+                        has_full_name = any(
+                            len(WORD_TOKEN.findall(name)) >= 2
+                            and cls._contains_named_text(sentence, name)
+                            for name in identity.names
+                        )
+                        introduced_ordinal = introduced_at.get(identity.key)
+                        if not has_full_name and introduced_ordinal is not None:
+                            supporting.add(introduced_ordinal)
+                    return _RelationshipEvidence(
+                        supported=True,
+                        source_record_ordinals=tuple(sorted(supporting)),
+                    )
             elif cls._any_relationship_pattern(
                 sentence,
                 kind,
@@ -1129,6 +1551,8 @@ class KnowledgeCompiler:
                 )
             }
             introduced.update(sentence_mentions)
+            for key in sentence_mentions:
+                introduced_at.setdefault(key, ordinal)
 
             leading = {
                 identity.key
@@ -1653,10 +2077,24 @@ class KnowledgeCompiler:
                 )
             )
 
-    def _transition(self, job: KnowledgeCompilationJob, status: CompilationStatus) -> None:
+    def _transition(
+        self,
+        job: KnowledgeCompilationJob,
+        status: CompilationStatus,
+        *,
+        metrics: _CompilationMetrics | None = None,
+    ) -> None:
         job.status = status
         job.error = None
+        if metrics is None:
+            self.session.commit()
+        else:
+            self._timed_commit(metrics)
+
+    def _timed_commit(self, metrics: _CompilationMetrics) -> None:
+        started = time.monotonic()
         self.session.commit()
+        metrics.database_commit_ms += (time.monotonic() - started) * 1000
 
     @staticmethod
     def _report_source(document: Document, version: DocumentVersion) -> CompilationSource:
