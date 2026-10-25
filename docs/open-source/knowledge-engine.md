@@ -93,7 +93,10 @@ only—not source text, prompts, filenames, page titles, claims, or model output
 Changed-page transactions rebuild the lexical index and lint exactly once inside the rollback-safe
 Wiki transaction. The compiler's visible `INDEXING` and `LINTING` stages reflect those authoritative
 results without rerunning either whole-Wiki operation. Semantic no-op compilation still avoids page,
-index, and source-manifest writes.
+index, and source-manifest writes. Exact facts are matched by normalized claim text and
+classification rather than a model-chosen claim key, so a harmless key-label change does not create
+a duplicate claim or destabilize page bytes. Same-key facts with different text still follow the
+existing conflict-preservation rules.
 
 ## Page classification
 

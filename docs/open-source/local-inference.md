@@ -19,10 +19,12 @@ The optional `gemma-4-e4b-q4-k-m` entry pins Unsloth's
 `bfc15c382204943c3a8fff0c750b94ae2364d7a3`, size 4,977,171,584 bytes, and SHA-256
 `85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87`. The local artifact hash
 was independently verified, and managed llama.cpp b11146 passed load, non-thinking Jinja chat,
-strict JSON-schema, and OpenAI-compatible tool-call smokes at 8,192 tokens. The entry remains an
-artifact-verified candidate until Direct, Wiki, ingestion/compiler, cancellation, context, and
-Qwen → Gemma → Qwen rollback acceptance all pass. It is neither downloaded nor selected by listing
-the catalog, and it does not replace the default.
+strict JSON-schema, and OpenAI-compatible tool-call smokes at 8,192 tokens. Real thinking-off
+acceptance also passes Direct and grounded Wiki behavior plus strict version-1 knowledge compilation
+for equivalent TXT, PDF, and DOCX fixtures, including provenance, retrieval, atomic invalid-output
+failure, and reprocess idempotency. The entry remains an artifact-verified candidate because the
+mandatory Qwen → Gemma → Qwen managed switch, preservation, readiness, and rollback exercise has not
+run. Catalog listing never downloads or selects it, and it does not replace the default.
 
 Both Wiki and Direct chat modes use this same active model and provider path. Direct is not a
 second client or model: it is an ADK invocation with retrieval tools withheld. It therefore makes

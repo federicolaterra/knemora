@@ -63,7 +63,9 @@ Q4_K_M distributed by Unsloth. Knemora pins revision
 `bfc15c382204943c3a8fff0c750b94ae2364d7a3`, the 4,977,171,584-byte artifact, and SHA-256
 `85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87`. It is visible but not
 downloaded or selected until explicitly requested, and Qwen remains the default and rollback model.
-The artifact and managed-runtime smoke pass do not constitute full Knemora workflow acceptance.
+The exact artifact has passed real thinking-off version-1 TXT/PDF/DOCX compilation, provenance,
+retrieval, atomicity, and idempotency acceptance. It remains a candidate until the mandatory managed
+Qwen → Gemma → Qwen preservation/readiness/rollback gate also passes.
 
 ```bash
 ./knemora models

@@ -1336,6 +1336,51 @@ def test_valid_short_fixture_uses_one_v1_request_without_fallback(tmp_path: Path
     asyncio.run(exercise())
 
 
+def test_reprocess_preserves_exact_fact_when_model_changes_only_claim_key(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        first = project_aurora_proposal()
+        second = json.loads(json.dumps(first))
+        second["pages"][0]["claims"][0]["key"] = "launch_schedule"
+        provider = ProposalProvider(first, second)
+        app = build_app(tmp_path, provider)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            uploaded, compiled = await upload_and_compile(
+                client,
+                "aurora.txt",
+                b"Project Aurora releases on Friday at 14:00 UTC.",
+                "text/plain",
+            )
+            wiki_before = {
+                path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+                for path in app.state.settings.knowledge_path.rglob("*")
+                if path.is_file()
+            }
+            reprocessed = await client.post(
+                f"/api/v1/ingestion-jobs/{uploaded['ingestion_job_id']}/reprocess"
+            )
+            recompiled = await client.post(
+                f"/api/v1/document-versions/{uploaded['document_version_id']}/compile"
+            )
+
+        page = WikiStore(app.state.settings.knowledge_path).read_page("Project Aurora")
+        wiki_after = {
+            path.relative_to(app.state.settings.knowledge_path).as_posix(): path.read_bytes()
+            for path in app.state.settings.knowledge_path.rglob("*")
+            if path.is_file()
+        }
+        assert compiled["status"] == "COMPLETED"
+        assert reprocessed.status_code == 200
+        assert recompiled.json()["status"] == "COMPLETED"
+        assert recompiled.json()["report"]["pages_created"] == []
+        assert recompiled.json()["report"]["pages_updated"] == []
+        assert len(page.claims) == 1
+        assert page.claims[0].key == "release_window"
+        assert wiki_after == wiki_before
+        assert len(provider.requests) == 2
+
+    asyncio.run(exercise())
+
+
 def test_wiki_conflict_discards_cached_proposal_before_user_retry(tmp_path: Path) -> None:
     async def exercise() -> None:
         provider = ProposalProvider(

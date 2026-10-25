@@ -25,6 +25,9 @@ and established interfaces.
 
 ### Fixed
 
+- Reprocessing no longer duplicates an otherwise identical fact when a model changes only the
+  proposal's claim key; exact text/classification matches retain the established claim identity and
+  byte-stable Wiki page.
 - Direct avoids constructing unused retrieval tools and uses a shorter equivalent policy prompt
   with an explicit concise-answer rule, reducing matched Gemma prompt and completion work without
   bypassing ADK, changing global generation settings, or weakening retrieval isolation.
