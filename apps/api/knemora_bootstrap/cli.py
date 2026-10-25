@@ -594,7 +594,12 @@ def _print_models(paths: AppPaths) -> None:
     print("-" * 86)
     for model in registry.effective().values():
         source = "User" if model.is_user_import else "Knemora"
-        verification = "Custom" if model.is_user_import else "Tested"
+        if model.is_user_import:
+            verification = "Custom"
+        elif model.verification_status == "knemora-tested":
+            verification = "Tested"
+        else:
+            verification = "Candidate"
         flags = []
         if model.id == DEFAULT_MODEL_ID:
             flags.append("default")
@@ -638,6 +643,7 @@ def _print_model_info(paths: AppPaths, model_id: str) -> None:
         ("ID", model.id),
         ("Origin", "user" if model.is_user_import else "Knemora curated"),
         ("Repository", model.repository),
+        ("Revision", model.revision),
         ("Artifact", model.artifact or model.filename),
         ("Variant", model.variant or model.quantization),
         ("Runtime", model.runtime),

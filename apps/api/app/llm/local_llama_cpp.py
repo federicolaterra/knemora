@@ -14,6 +14,7 @@ import httpx
 from app.llm.contracts import (
     ChatChunk,
     ChatMessage,
+    ChatPerformance,
     ChatRequest,
     ChatResponse,
     ChatToolCall,
@@ -131,6 +132,29 @@ class LocalLlamaCppProvider:
             completion_tokens=usage.get("completion_tokens"),
             total_tokens=usage.get("total_tokens"),
         )
+
+    @staticmethod
+    def _performance(data: dict[str, Any] | None) -> ChatPerformance:
+        timings = data or {}
+
+        def duration(name: str) -> float | None:
+            value = timings.get(name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            parsed = float(value)
+            return parsed if parsed >= 0 else None
+
+        return ChatPerformance(
+            prefill_ms=duration("prompt_ms"),
+            decode_ms=duration("predicted_ms"),
+        )
+
+    @staticmethod
+    def _record_runtime_performance(performance: ChatPerformance) -> None:
+        if performance.prefill_ms is not None:
+            metrics_registry.observe("llm.prompt.duration", performance.prefill_ms)
+        if performance.decode_ms is not None:
+            metrics_registry.observe("llm.decode.duration", performance.decode_ms)
 
     def _client_or_new(self) -> httpx.AsyncClient:
         return self._client or httpx.AsyncClient(timeout=self._timeout)
@@ -255,8 +279,10 @@ class LocalLlamaCppProvider:
                 model=str(data.get("model") or self._model),
                 finish_reason=choice.get("finish_reason"),
                 usage=self._usage(data.get("usage")),
+                performance=self._performance(data.get("timings")),
             )
             elapsed = (time.monotonic() - started) * 1_000
+            self._record_runtime_performance(result.performance)
             metrics_registry.observe("llm.request.duration", elapsed)
             metrics_registry.increment("llm.request.completed")
             if result.usage.completion_tokens:
@@ -276,6 +302,11 @@ class LocalLlamaCppProvider:
                         "prompt_tokens": result.usage.prompt_tokens,
                         "completion_tokens": result.usage.completion_tokens,
                         "finish_reason": result.finish_reason,
+                        "prefill_ms": result.performance.prefill_ms,
+                        "decode_ms": result.performance.decode_ms,
+                        "effective_context_tokens": self._context_tokens,
+                        "stream": False,
+                        "tools_count": len(request.tools),
                     }
                 },
             )
@@ -324,7 +355,12 @@ class LocalLlamaCppProvider:
     async def stream(self, request: ChatRequest) -> AsyncIterator[ChatChunk]:
         started = time.monotonic()
         first_token_recorded = False
+        time_to_first_token_ms: float | None = None
+        prompt_tokens: int | None = None
         completion_tokens: int | None = None
+        finish_reason: str | None = None
+        performance: ChatPerformance | None = None
+        outcome = "completed"
         timeout_seconds = request.timeout_seconds or self._timeout
         client = self._client_or_new()
         close_client = self._client is None
@@ -349,25 +385,37 @@ class LocalLlamaCppProvider:
                         choices = data.get("choices") or []
                         choice = choices[0] if choices else {}
                         delta = choice.get("delta", {}).get("content") or ""
-                        finish_reason = choice.get("finish_reason")
+                        chunk_finish_reason = choice.get("finish_reason")
+                        if chunk_finish_reason is not None:
+                            finish_reason = chunk_finish_reason
                         usage = self._usage(data.get("usage")) if data.get("usage") else None
+                        chunk_performance = (
+                            self._performance(data.get("timings")) if data.get("timings") else None
+                        )
+                        if chunk_performance is not None:
+                            performance = chunk_performance
                         if usage and usage.completion_tokens is not None:
                             completion_tokens = usage.completion_tokens
+                        if usage and usage.prompt_tokens is not None:
+                            prompt_tokens = usage.prompt_tokens
                     except (AttributeError, IndexError, TypeError, ValueError) as exc:
                         raise LLMResponseError("invalid llama.cpp SSE event") from exc
                     if delta and not first_token_recorded:
+                        time_to_first_token_ms = (time.monotonic() - started) * 1_000
                         metrics_registry.observe(
-                            "llm.stream.time_to_first_token", (time.monotonic() - started) * 1_000
+                            "llm.stream.time_to_first_token", time_to_first_token_ms
                         )
                         first_token_recorded = True
                     yield ChatChunk(
                         delta=delta,
-                        done=finish_reason is not None,
+                        done=chunk_finish_reason is not None,
                         model=str(data.get("model") or self._model),
-                        finish_reason=finish_reason,
+                        finish_reason=chunk_finish_reason,
                         usage=usage,
+                        performance=chunk_performance,
                     )
         except asyncio.CancelledError:
+            outcome = "cancelled"
             metrics_registry.increment("llm.stream.cancelled")
             logger.warning(
                 "llm_stream_failed",
@@ -382,6 +430,7 @@ class LocalLlamaCppProvider:
             )
             raise
         except httpx.TimeoutException as exc:
+            outcome = f"{self._timeout_scope(exc)}_timeout"
             timeout_scope = self._timeout_scope(exc)
             effective_limit = (
                 timeout_seconds if timeout_scope == "read" else min(self._timeout, timeout_seconds)
@@ -391,9 +440,11 @@ class LocalLlamaCppProvider:
                 f"llama.cpp stream {timeout_scope} exceeded its {effective_limit:g}-second deadline"
             ) from exc
         except httpx.TransportError as exc:
+            outcome = "transport_error"
             metrics_registry.increment("llm.stream.transport_error")
             raise LLMTransportError("llama.cpp stream failed before completion") from exc
         except httpx.HTTPStatusError as exc:
+            outcome = f"http_{exc.response.status_code}"
             raise LLMUnavailableError(f"llama.cpp stream failed: {exc}") from exc
         finally:
             elapsed = (time.monotonic() - started) * 1_000
@@ -404,5 +455,31 @@ class LocalLlamaCppProvider:
                     "llm.stream.tokens_per_second",
                     completion_tokens / max(elapsed / 1_000, 0.001),
                 )
+            if performance is not None:
+                self._record_runtime_performance(performance)
+            logger.info(
+                "llm_stream_completed",
+                extra={
+                    "knemora_fields": {
+                        "model": self._model,
+                        "max_tokens": request.max_tokens,
+                        "duration_ms": round(elapsed, 3),
+                        "time_to_first_token_ms": (
+                            round(time_to_first_token_ms, 3)
+                            if time_to_first_token_ms is not None
+                            else None
+                        ),
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "finish_reason": finish_reason,
+                        "prefill_ms": performance.prefill_ms if performance else None,
+                        "decode_ms": performance.decode_ms if performance else None,
+                        "effective_context_tokens": self._context_tokens,
+                        "stream": True,
+                        "tools_count": len(request.tools),
+                        "outcome": outcome,
+                    }
+                },
+            )
             if close_client:
                 await client.aclose()

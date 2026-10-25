@@ -45,6 +45,7 @@ class ModelSpec:
     variant: str = ""
     format: str = "gguf"
     runtime: str = "llama.cpp"
+    revision: str = "main"
     local_path: str = ""
     imported_at: str = ""
     verification_status: str = "knemora-tested"
@@ -61,7 +62,10 @@ class ModelSpec:
     @property
     def download_url(self) -> str:
         artifact = self.artifact or self.filename
-        return f"https://huggingface.co/{self.repository}/resolve/main/{artifact}?download=true"
+        return (
+            f"https://huggingface.co/{self.repository}/resolve/"
+            f"{self.revision}/{artifact}?download=true"
+        )
 
     @property
     def is_user_import(self) -> bool:
@@ -108,6 +112,33 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         metadata_architecture="qwen3",
         advertised_context_tokens=32_768,
         license_url="https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+    ),
+    "gemma-4-e4b-q4-k-m": ModelSpec(
+        id="gemma-4-e4b-q4-k-m",
+        display_name="Gemma 4 E4B Instruct (Q4_K_M)",
+        provider="llama_cpp",
+        repository="unsloth/gemma-4-E4B-it-GGUF",
+        filename="gemma-4-E4B-it-Q4_K_M.gguf",
+        artifact="gemma-4-E4B-it-Q4_K_M.gguf",
+        variant="Q4_K_M",
+        quantization="Q4_K_M",
+        sha256="85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87",
+        size_bytes=4_977_171_584,
+        required_free_bytes=6_000_000_000,
+        recommended_memory_gb=6,
+        context_tokens=8192,
+        revision="bfc15c382204943c3a8fff0c750b94ae2364d7a3",
+        verification_status="artifact-verified",
+        compatibility_status="managed-runtime-smoke-tested",
+        metadata_architecture="gemma4",
+        advertised_context_tokens=131_072,
+        embedding_length=2_560,
+        block_count=42,
+        attention_head_count=8,
+        attention_head_count_kv=2,
+        attention_key_length=512,
+        attention_value_length=512,
+        license_url="https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF",
     ),
 }
 

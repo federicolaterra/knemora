@@ -8,6 +8,10 @@ and established interfaces.
 
 ### Added
 
+- Optional artifact-verified `gemma-4-e4b-q4-k-m` curated candidate with immutable Hugging Face
+  revision, exact size/SHA-256, conservative acceptance label, and unchanged Qwen default.
+- Content-free Direct latency telemetry spanning llama.cpp prefill/decode and TTFT, provider and ADK
+  stages, history/session/persistence work, and browser stream/render timing.
 - Per-turn Wiki / Direct chat modes. Wiki remains the backwards-compatible default; Direct uses
   the selected local model through the existing ADK/provider path with all retrieval tools and
   schemas withheld.
@@ -21,6 +25,9 @@ and established interfaces.
 
 ### Fixed
 
+- Direct avoids constructing unused retrieval tools and uses a shorter equivalent policy prompt
+  with an explicit concise-answer rule, reducing matched Gemma prompt and completion work without
+  bypassing ADK, changing global generation settings, or weakening retrieval isolation.
 - Ordinary chat no longer enters compulsory Wiki retrieval, while organization-specific questions
   and co-referential follow-ups retain bounded owner-authorized grounding and citation handling.
 - Simple two-operand decimal expressions and terse arithmetic continuations now use a bounded

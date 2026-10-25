@@ -823,6 +823,20 @@ def test_model_registry_resolves_default_and_validates_existing_artifact(tmp_pat
     assert default.filename == "qwen3-8b-Q3_K_M.gguf"
     assert default.context_tokens == 8192
     assert get_model("qwen3.8-27b-iq2-s").filename == "Qwen3.8-27B-GSQ-RCO-IQ2_S.gguf"
+    gemma = get_model("gemma-4-e4b-q4-k-m")
+    assert gemma.filename == "gemma-4-E4B-it-Q4_K_M.gguf"
+    assert gemma.revision == "bfc15c382204943c3a8fff0c750b94ae2364d7a3"
+    assert gemma.sha256 == "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87"
+    assert gemma.size_bytes == 4_977_171_584
+    assert gemma.context_tokens == 8192
+    assert gemma.advertised_context_tokens == 131_072
+    assert gemma.verification_status == "artifact-verified"
+    assert gemma.compatibility_status == "managed-runtime-smoke-tested"
+    assert gemma.download_url == (
+        "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/"
+        "bfc15c382204943c3a8fff0c750b94ae2364d7a3/"
+        "gemma-4-E4B-it-Q4_K_M.gguf?download=true"
+    )
     assert manager.ensure(model) == tmp_path / "test.gguf"
 
 

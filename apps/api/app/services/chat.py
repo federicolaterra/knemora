@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
 from decimal import Decimal, DivisionByZero, InvalidOperation
@@ -19,11 +21,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import Settings
 from app.llm import LLMProvider
+from app.observability import metrics_registry
 from app.repositories.chat import ChatRepository
 from knowledge_agent.agent import APP_NAME, create_adk_app, strip_hidden_reasoning
 from knowledge_agent.tools import create_agent_tools
 
 ResponseMode = Literal["wiki", "direct"]
+logger = logging.getLogger(__name__)
 _DECIMAL_PATTERN = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)"
 _NUMERIC_ANSWER = re.compile(rf"^\s*({_DECIMAL_PATTERN})\s*[.!]?\s*$")
 _EMPHASIZED_NUMERIC_ANSWER = re.compile(rf"(?:\*\*|__)\s*({_DECIMAL_PATTERN})\s*(?:\*\*|__)")
@@ -152,7 +156,8 @@ class ChatService:
     ) -> None:
         self._repository = repository
         self._provider = provider
-        self._tools = create_agent_tools(settings=settings, session_factory=session_factory)
+        self._settings = settings
+        self._session_factory = session_factory
         self._model_name = model_name
         self._max_output_tokens = max_output_tokens
 
@@ -164,9 +169,12 @@ class ChatService:
         content: str,
         response_mode: ResponseMode = "wiki",
     ) -> AsyncIterator[str]:
+        total_started = time.monotonic()
+        history_started = total_started
         conversation = self._repository.get_conversation(conversation_id, user_id=user_id)
         history = self._repository.list_messages(conversation_id)
         prior = [(message.role, message.content) for message in history]
+        history_ms = (time.monotonic() - history_started) * 1_000
         self._repository.assign_initial_title(conversation, content)
         self._repository.add_message(conversation_id=conversation_id, role="user", content=content)
 
@@ -179,9 +187,28 @@ class ChatService:
                 provider_model=self._model_name,
             )
             self._repository.commit()
+            elapsed_ms = (time.monotonic() - total_started) * 1_000
+            metrics_registry.observe("chat.request.duration", elapsed_ms)
+            logger.info(
+                "chat_request_completed",
+                extra={
+                    "knemora_fields": {
+                        "model": self._model_name,
+                        "response_mode": response_mode,
+                        "duration_ms": round(elapsed_ms, 3),
+                        "history_preparation_ms": round(history_ms, 3),
+                        "history_length": len(prior),
+                        "stream": True,
+                        "tools_count": 0,
+                        "model_calls": 0,
+                        "deterministic_arithmetic": True,
+                    }
+                },
+            )
             yield arithmetic_answer
             return
 
+        session_started = time.monotonic()
         adk_session_id = str(uuid.uuid4())
         self._repository.ensure_agent_session(
             conversation_id=conversation_id, adk_session_id=adk_session_id
@@ -199,12 +226,19 @@ class ChatService:
             },
         )
         await _replay_history(session_service, session, prior)
+        tools_started = time.monotonic()
+        tools = (
+            create_agent_tools(settings=self._settings, session_factory=self._session_factory)
+            if response_mode == "wiki"
+            else ()
+        )
+        tools_ms = (time.monotonic() - tools_started) * 1_000
         runner = Runner(
             app=create_adk_app(
                 self._provider,
                 model_name=self._model_name,
                 max_output_tokens=self._max_output_tokens,
-                tools=self._tools if response_mode == "wiki" else (),
+                tools=tools,
                 response_mode=response_mode,
             ),
             session_service=session_service,
@@ -213,13 +247,23 @@ class ChatService:
             role="user",
             parts=[types.Part.from_text(text=content)],
         )
+        session_ms = (time.monotonic() - session_started) * 1_000
         response_parts: list[str] = []
+        first_visible_ms: float | None = None
+        prompt_tokens: int | None = None
+        completion_tokens: int | None = None
         async for event in runner.run_async(
             user_id=str(user_id),
             session_id=adk_session_id,
             new_message=prompt,
             run_config=RunConfig(streaming_mode=StreamingMode.SSE),
         ):
+            usage = getattr(event, "usage_metadata", None)
+            if usage is not None:
+                prompt_tokens = getattr(usage, "prompt_token_count", None) or prompt_tokens
+                completion_tokens = (
+                    getattr(usage, "candidates_token_count", None) or completion_tokens
+                )
             if event.content is None:
                 continue
             text = "".join(
@@ -232,10 +276,13 @@ class ChatService:
             if event.partial or not response_parts:
                 visible = strip_hidden_reasoning(text)
                 if visible:
+                    if first_visible_ms is None:
+                        first_visible_ms = (time.monotonic() - total_started) * 1_000
                     response_parts.append(visible)
                     yield visible
 
         final_text = "".join(response_parts).strip()
+        persistence_started = time.monotonic()
         self._repository.add_message(
             conversation_id=conversation_id,
             role="assistant",
@@ -243,6 +290,38 @@ class ChatService:
             provider_model=self._model_name,
         )
         self._repository.commit()
+        persistence_ms = (time.monotonic() - persistence_started) * 1_000
+        elapsed_ms = (time.monotonic() - total_started) * 1_000
+        metrics_registry.observe("chat.request.duration", elapsed_ms)
+        metrics_registry.observe("chat.history.duration", history_ms)
+        metrics_registry.observe("chat.session.duration", session_ms)
+        metrics_registry.observe("chat.persistence.duration", persistence_ms)
+        if first_visible_ms is not None:
+            metrics_registry.observe("chat.time_to_first_visible_delta", first_visible_ms)
+        logger.info(
+            "chat_request_completed",
+            extra={
+                "knemora_fields": {
+                    "model": self._model_name,
+                    "response_mode": response_mode,
+                    "duration_ms": round(elapsed_ms, 3),
+                    "history_preparation_ms": round(history_ms, 3),
+                    "session_setup_and_replay_ms": round(session_ms, 3),
+                    "tool_construction_ms": round(tools_ms, 3),
+                    "persistence_ms": round(persistence_ms, 3),
+                    "time_to_first_visible_delta_ms": (
+                        round(first_visible_ms, 3) if first_visible_ms is not None else None
+                    ),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "effective_context_tokens": self._provider.capabilities.max_context_tokens,
+                    "history_length": len(prior),
+                    "stream": True,
+                    "tools_count": len(tools),
+                    "deterministic_arithmetic": False,
+                }
+            },
+        )
 
     async def reply(
         self,

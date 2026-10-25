@@ -58,9 +58,19 @@ Its published SHA-256 is pinned in the registry. Downloads use a `.partial` path
 server permits, and are promoted only after full checksum validation. Model licenses remain
 separate from Knemora's MIT license.
 
+The optional curated candidate `gemma-4-e4b-q4-k-m` is Google DeepMind's Gemma 4 E4B Instruct
+Q4_K_M distributed by Unsloth. Knemora pins revision
+`bfc15c382204943c3a8fff0c750b94ae2364d7a3`, the 4,977,171,584-byte artifact, and SHA-256
+`85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87`. It is visible but not
+downloaded or selected until explicitly requested, and Qwen remains the default and rollback model.
+The artifact and managed-runtime smoke pass do not constitute full Knemora workflow acceptance.
+
 ```bash
 ./knemora models
 ./knemora setup --model qwen3-8b-q3-k-m
+./knemora model info gemma-4-e4b-q4-k-m
+# Optional candidate; downloads and selects only when explicitly requested.
+./knemora setup --model gemma-4-e4b-q4-k-m
 ```
 
 Model memory estimates are conservative preflight safeguards rather than load guarantees. Unsafe

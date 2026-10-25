@@ -14,10 +14,26 @@ sooner and is not an equivalent-quality mode. Explicit per-model or environment 
 silently lowered. The former 27B model remains selectable as `qwen3.8-27b-iq2-s`; it is no longer the
 default.
 
+The optional `gemma-4-e4b-q4-k-m` entry pins Unsloth's
+`gemma-4-E4B-it-Q4_K_M.gguf` at immutable revision
+`bfc15c382204943c3a8fff0c750b94ae2364d7a3`, size 4,977,171,584 bytes, and SHA-256
+`85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87`. The local artifact hash
+was independently verified, and managed llama.cpp b11146 passed load, non-thinking Jinja chat,
+strict JSON-schema, and OpenAI-compatible tool-call smokes at 8,192 tokens. The entry remains an
+artifact-verified candidate until Direct, Wiki, ingestion/compiler, cancellation, context, and
+Qwen → Gemma → Qwen rollback acceptance all pass. It is neither downloaded nor selected by listing
+the catalog, and it does not replace the default.
+
 Both Wiki and Direct chat modes use this same active model and provider path. Direct is not a
 second client or model: it is an ADK invocation with retrieval tools withheld. It therefore makes
 no Wiki, document, dataset, graph, source, or public-search calls, but it does not imply a universal
 latency improvement.
+
+Content-free telemetry separates provider duration, llama.cpp prefill/decode timings, time to first
+streamed token/visible delta, history preparation, ADK session setup and replay, persistence, model,
+effective context, history length, stream mode, tool count, token usage, and finish reason. Browser
+console telemetry records end-to-end stream, first-delta, and render-settle timing without prompts
+or responses. Direct also skips constructing retrieval tools for the invocation.
 
 Resolution precedence is a validated absolute `LLAMA_SERVER_BIN` operator override, the verified
 active managed installation, then a validated explicitly configured legacy `LLAMA_CPP_DIR` source

@@ -68,6 +68,10 @@ const directProgressSteps = ["Generating answer…"];
 const demoPrompt =
   "Which gateway, owner, policy, and freeze day apply to ORBIT-LANTERN? Cite sources.";
 
+function roundedTiming(value: number | null): number | null {
+  return value === null ? null : Number(value.toFixed(3));
+}
+
 const activeConversation = computed(
   () =>
     workspace.conversations.find((item) => item.id === activeId.value) ??
@@ -219,6 +223,10 @@ async function send(content = input.value.trim()) {
     top: chatScroll.value.scrollHeight,
     behavior: "smooth",
   });
+  const streamStarted = performance.now();
+  let firstDeltaMs: number | null = null;
+  let lastDeltaAt = streamStarted;
+  let deltaCount = 0;
   try {
     await streamMessage(
       activeId.value,
@@ -226,6 +234,10 @@ async function send(content = input.value.trim()) {
       submittedMode,
       controller.value.signal,
       (delta) => {
+        const receivedAt = performance.now();
+        if (firstDeltaMs === null) firstDeltaMs = receivedAt - streamStarted;
+        lastDeltaAt = receivedAt;
+        deltaCount += 1;
         target.content += delta;
         void nextTick(() =>
           chatScroll.value?.scrollTo({
@@ -235,6 +247,15 @@ async function send(content = input.value.trim()) {
         );
       },
     );
+    await nextTick();
+    const renderedAt = performance.now();
+    console.info("chat_stream_completed", {
+      responseMode: submittedMode,
+      durationMs: Number((renderedAt - streamStarted).toFixed(3)),
+      timeToFirstDeltaMs: roundedTiming(firstDeltaMs),
+      renderAfterLastDeltaMs: Number((renderedAt - lastDeltaAt).toFixed(3)),
+      deltaCount,
+    });
     await workspace.refresh();
     messages.value = await api.listMessages(activeId.value);
   } catch (reason) {
