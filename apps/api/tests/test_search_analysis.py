@@ -595,6 +595,46 @@ def test_forced_retrieval_uses_meaningful_query_terms() -> None:
     assert later_call.arguments["query"] == "Project LUMEN-QUAY are main risks"
 
 
+def test_natural_relationship_question_forces_wiki_retrieval_without_user_prompting() -> None:
+    tools = (
+        ChatToolDefinition(
+            name="search_wiki",
+            description="Search the Wiki.",
+            parameters={"type": "object", "properties": {}},
+        ),
+    )
+
+    italian = _forced_retrieval_call(
+        ChatRequest(
+            messages=(
+                ChatMessage(
+                    role="user",
+                    content="Che relazione c'è tra Aldo Riva e Bruno Riva?",
+                ),
+            ),
+            tools=tools,
+        )
+    )
+    english = _forced_retrieval_call(
+        ChatRequest(
+            messages=(
+                ChatMessage(
+                    role="user",
+                    content="What is the relationship between Aldo Riva and Bruno Riva?",
+                ),
+            ),
+            tools=tools,
+        )
+    )
+
+    assert italian is not None
+    assert italian.name == "search_wiki"
+    assert italian.arguments["query"] == "Aldo Riva Bruno Riva"
+    assert english is not None
+    assert english.name == "search_wiki"
+    assert english.arguments["query"] == "relationship between Aldo Riva Bruno Riva"
+
+
 def test_general_chat_and_translation_do_not_force_wiki_retrieval() -> None:
     tools = (
         ChatToolDefinition(

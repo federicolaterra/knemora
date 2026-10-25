@@ -121,6 +121,15 @@ KNOWLEDGE_SCOPE_REQUEST = re.compile(
 KNOWLEDGE_ATTRIBUTE_REQUEST = re.compile(
     r"\b(?:owner|owns|owned|risk|risks|headquarters?|headquartered|founded)\b", re.I
 )
+ENTITY_RELATIONSHIP_REQUEST = re.compile(
+    r"\b(?:relationship|relation|connection|link|related|connected|"
+    r"relazione|rapporto|legame|collegat[aioe])\b",
+    re.I,
+)
+ENTITY_PAIR_REQUEST = re.compile(
+    r"\b(?:between|tra|fra)\b.{1,160}\b(?:and|e)\b",
+    re.I | re.DOTALL,
+)
 TRANSLATION_REQUEST = re.compile(
     r"\b(?:translate|translation|traduci|tradurre|traduce|traducir|traducci[oó]n)\b", re.I
 )
@@ -136,23 +145,35 @@ SEARCH_STOP_WORDS = {
     "answer",
     "any",
     "cite",
+    "che",
+    "collegamento",
+    "connessione",
+    "c",
     "does",
     "explain",
     "from",
+    "fra",
     "is",
     "it",
     "its",
+    "e",
+    "è",
     "knowledge",
     "local",
     "material",
     "me",
+    "legame",
     "of",
     "please",
+    "quale",
+    "rapporto",
+    "relazione",
     "say",
     "source",
     "summarize",
     "tell",
     "the",
+    "tra",
     "to",
     "used",
     "what",
@@ -282,6 +303,8 @@ def _requires_wiki_retrieval(messages: Sequence[ChatMessage], user_text: str) ->
     if TRANSLATION_REQUEST.search(user_text):
         return False
     if KNOWLEDGE_SCOPE_REQUEST.search(user_text):
+        return True
+    if ENTITY_RELATIONSHIP_REQUEST.search(user_text) and ENTITY_PAIR_REQUEST.search(user_text):
         return True
     if not KNOWLEDGE_ATTRIBUTE_REQUEST.search(user_text):
         return False

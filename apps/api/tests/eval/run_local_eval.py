@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,13 @@ def _prompt_text(case: dict[str, Any]) -> str:
     return "".join(str(part.get("text", "")) for part in prompt.get("parts", []))
 
 
-def _grade(case_id: str, prompt: str, response: str, calls: list[str]) -> dict[str, int]:
+def _grade(
+    case_id: str,
+    prompt: str,
+    response: str,
+    calls: list[str],
+    tool_results: Sequence[dict[str, Any]] = (),
+) -> dict[str, int]:
     lowered = response.lower()
     scores = {
         "non_empty_visible_response": int(bool(response.strip())),
@@ -48,7 +55,9 @@ def _grade(case_id: str, prompt: str, response: str, calls: list[str]) -> dict[s
             "search_web",
         }
         scores["required_knowledge_tool"] = int(bool(allowed.intersection(calls)))
-        grounded = "wiki/" in lowered and "source" in lowered
+        grounded = all(
+            field in lowered for field in ("wiki path:", "original filename:", "locator:")
+        )
         dataset_grounded = "version" in lowered and "column" in lowered and "source" in lowered
         insufficient = any(
             phrase in lowered
@@ -77,7 +86,59 @@ def _grade(case_id: str, prompt: str, response: str, calls: list[str]) -> dict[s
             and "column" in lowered
             and any(term in lowered for term in ("version", "checksum"))
         )
+    if case_id == "natural_language_relationship":
+        scores["natural_relationship_answer"] = int(
+            "elena ferri" in lowered
+            and "marco ferri" in lowered
+            and any(term in lowered for term in ("sorella", "fratello", "sibling", "sister"))
+        )
+        scores["relationship_tool_trajectory"] = int(
+            "search_wiki" in calls and "read_wiki_page" in calls
+        )
+        page_reads = [result for result in tool_results if result.get("name") == "read_wiki_page"]
+        scores["relationship_evidence_retrieval"] = int(
+            any(
+                result.get("status") == "success"
+                and result.get("claim_count", 0) > 0
+                and result.get("relationship_count", 0) > 0
+                and result.get("citation_count", 0) > 0
+                for result in page_reads
+            )
+        )
     return scores
+
+
+def _tool_result_summary(name: str | None, response: object) -> dict[str, Any]:
+    payload = response if isinstance(response, dict) else {}
+    summary: dict[str, Any] = {
+        "name": name or "unknown_tool",
+        "status": payload.get("status", "unknown"),
+    }
+    if name == "search_wiki":
+        results = payload.get("results")
+        summary["result_count"] = len(results) if isinstance(results, list) else 0
+    elif name == "read_wiki_page":
+        page = payload.get("page")
+        if not isinstance(page, dict):
+            page = {}
+        claims = page.get("claims")
+        relationships = page.get("relationships")
+        if not isinstance(claims, list):
+            claims = []
+        if not isinstance(relationships, list):
+            relationships = []
+        summary.update(
+            {
+                "claim_count": len(claims),
+                "relationship_count": len(relationships),
+                "citation_count": sum(
+                    len(claim.get("citations", []))
+                    for claim in claims
+                    if isinstance(claim, dict) and isinstance(claim.get("citations"), list)
+                ),
+            }
+        )
+    return summary
 
 
 async def run_case(
@@ -94,6 +155,7 @@ async def run_case(
     )
     response_parts: list[str] = []
     calls: list[str] = []
+    tool_results: list[dict[str, Any]] = []
     async for event in runner.run_async(
         user_id="evaluation",
         session_id=session_id,
@@ -102,6 +164,13 @@ async def run_case(
         for part in (event.content.parts if event.content else ()) or ():
             if part.function_call and part.function_call.name:
                 calls.append(part.function_call.name)
+            if part.function_response:
+                tool_results.append(
+                    _tool_result_summary(
+                        part.function_response.name,
+                        part.function_response.response,
+                    )
+                )
             if part.text and not getattr(part, "thought", False):
                 response_parts.append(part.text)
     response = strip_hidden_reasoning("".join(response_parts)).strip()
@@ -110,7 +179,8 @@ async def run_case(
         "prompt": prompt,
         "response": response,
         "tool_calls": calls,
-        "scores": _grade(case_id, prompt, response, calls),
+        "tool_results": tool_results,
+        "scores": _grade(case_id, prompt, response, calls, tool_results),
     }
 
 

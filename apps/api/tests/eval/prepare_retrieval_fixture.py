@@ -111,17 +111,21 @@ def prepare() -> dict[str, object]:
         profile_result, profile_record = ingest(session, settings, "company-profile.md")
         audit_result, audit_record = ingest(session, settings, "company-audit.md")
         standard_result, standard_record = ingest(session, settings, "distribution-standard.md")
+        family_result, family_record = ingest(session, settings, "family-record.md")
         sales_result, sales_record = ingest(session, settings, "sales.csv")
 
     profile = (source(profile_result, profile_record),)
     audit = (source(audit_result, audit_record),)
     standard = (source(standard_result, standard_record),)
+    family = (source(family_result, family_record),)
     sales = (source(sales_result, sales_record),)
     acme_id = stable_id("page:acme")
     cold_id = stable_id("page:cold-chain")
     gdp_id = stable_id("page:gdp")
     nova_id = stable_id("page:nova")
     dataset_id = stable_id("page:sales")
+    elena_id = stable_id("page:elena-ferri")
+    marco_id = stable_id("page:marco-ferri")
     valletta_id = stable_id(f"{acme_id}:headquarters:valletta")
     milan_id = stable_id(f"{acme_id}:headquarters:milan")
     now = datetime.now(UTC)
@@ -240,6 +244,55 @@ def prepare() -> dict[str, object]:
                     "owner",
                     "Acme markets the Nova temperature-monitoring product.",
                     profile,
+                ),
+            ),
+            relationships=(),
+        ),
+        WikiPage(
+            id=elena_id,
+            type=PageKind.ENTITY,
+            title="Elena Ferri",
+            aliases=(),
+            topics=("people", "family"),
+            summary="A person documented in the synthetic family record.",
+            created_at=now,
+            updated_at=now,
+            compilation_version="knemora-eval/1",
+            provenance=family,
+            claims=(
+                claim(
+                    elena_id,
+                    "family_relationship",
+                    "Elena Ferri is Marco Ferri's older sister.",
+                    family,
+                ),
+            ),
+            relationships=(
+                WikiRelationship(
+                    relation="sibling_of",
+                    target_id=marco_id,
+                    target_title="Marco Ferri",
+                    provenance=family,
+                ),
+            ),
+        ),
+        WikiPage(
+            id=marco_id,
+            type=PageKind.ENTITY,
+            title="Marco Ferri",
+            aliases=(),
+            topics=("people", "family"),
+            summary="A person documented in the synthetic family record.",
+            created_at=now,
+            updated_at=now,
+            compilation_version="knemora-eval/1",
+            provenance=family,
+            claims=(
+                claim(
+                    marco_id,
+                    "family_relationship",
+                    "Marco Ferri is Elena Ferri's younger brother.",
+                    family,
                 ),
             ),
             relationships=(),
