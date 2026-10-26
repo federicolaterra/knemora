@@ -22,9 +22,13 @@ was independently verified, and managed llama.cpp b11146 passed load, non-thinki
 strict JSON-schema, and OpenAI-compatible tool-call smokes at 8,192 tokens. Real thinking-off
 acceptance also passes Direct and grounded Wiki behavior plus strict version-1 knowledge compilation
 for equivalent TXT, PDF, and DOCX fixtures, including provenance, retrieval, atomic invalid-output
-failure, and reprocess idempotency. The entry remains an artifact-verified candidate because the
-mandatory Qwen → Gemma → Qwen managed switch, preservation, readiness, and rollback exercise has not
-run. Catalog listing never downloads or selects it, and it does not replace the default.
+failure, and reprocess idempotency. The exact artifact is Knemora-tested: a disposable synthetic
+home passed managed Qwen → Gemma → Qwen selection and startup, API/UI/inference readiness, grounded
+continuity, byte/hash preservation, and a naturally rejected unsafe-start rollback without a memory
+safeguard bypass. Live Gemma passed at the supported 4,096-token context on the 16 GiB acceptance
+host; the earlier compilation matrix passed at 8,192 tokens. The label is scoped to this pinned
+artifact and managed llama.cpp b11146. Catalog listing never downloads or selects it, and Qwen
+remains the default.
 
 Both Wiki and Direct chat modes use this same active model and provider path. Direct is not a
 second client or model: it is an ADK invocation with retrieval tools withheld. It therefore makes

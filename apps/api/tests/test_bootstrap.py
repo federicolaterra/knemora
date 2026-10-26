@@ -830,8 +830,8 @@ def test_model_registry_resolves_default_and_validates_existing_artifact(tmp_pat
     assert gemma.size_bytes == 4_977_171_584
     assert gemma.context_tokens == 8192
     assert gemma.advertised_context_tokens == 131_072
-    assert gemma.verification_status == "artifact-verified"
-    assert gemma.compatibility_status == "managed-runtime-smoke-tested"
+    assert gemma.verification_status == "knemora-tested"
+    assert gemma.compatibility_status == "knemora-tested"
     assert gemma.download_url == (
         "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/"
         "bfc15c382204943c3a8fff0c750b94ae2364d7a3/"

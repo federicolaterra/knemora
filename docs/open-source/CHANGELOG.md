@@ -8,8 +8,9 @@ and established interfaces.
 
 ### Added
 
-- Optional artifact-verified `gemma-4-e4b-q4-k-m` curated candidate with immutable Hugging Face
-  revision, exact size/SHA-256, conservative acceptance label, and unchanged Qwen default.
+- Optional Knemora-tested `gemma-4-e4b-q4-k-m` curated model with immutable Hugging Face revision,
+  exact size/SHA-256, real TXT/PDF/DOCX compilation acceptance, managed Qwen → Gemma → Qwen
+  preservation/readiness/rollback acceptance, and unchanged Qwen default.
 - Content-free Direct latency telemetry spanning llama.cpp prefill/decode and TTFT, provider and ADK
   stages, history/session/persistence work, and browser stream/render timing.
 - Per-turn Wiki / Direct chat modes. Wiki remains the backwards-compatible default; Direct uses
