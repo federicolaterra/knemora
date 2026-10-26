@@ -886,7 +886,6 @@ def test_adk_executes_search_then_page_read_before_grounded_answer(tmp_path: Pat
         "get_backlinks",
         "read_source_reference",
         "analyze_dataset",
-        "search_web",
     }
 
 

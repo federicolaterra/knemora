@@ -18,8 +18,9 @@ Durable data/path/configuration changes must preserve the version, migration, re
 contract summarized in [Upgrading](upgrading.md#manual-upgrade-and-data-preservation).
 Acceptance checkouts must exclude the maintainer's ignored `.env` and use an isolated temporary
 home; setting `KNEMORA_HOME` alone does not override explicit database/source/Wiki paths in `.env`.
-Changes to the public-search boundary must preserve explicit per-turn opt-in, bounded queries and
-results, untrusted-result handling, and the default-disabled launch profile. ADK Web acceptance
+Changes to the public-search boundary must preserve Wiki's absolute exclusion, Direct-only double
+consent, one bounded current-message-only attempt, untrusted-result handling, and the default-
+disabled launch profile. ADK Web acceptance
 must use `./knemora --dev adk-web`, verify the printed loopback URL and `/list-apps`, and confirm a
 repeated launch does not replace another listener.
 

@@ -68,7 +68,9 @@ retrieval, atomicity, and idempotency acceptance. It has also passed the managed
 Qwen → Gemma → Qwen selection/readiness/preservation lifecycle, a naturally rejected unsafe-start
 rollback, and grounded behavior at the supported 4,096-token context on a 16 GiB Apple Silicon
 host. Admission remains dependent on current safe memory; this label is scoped to the pinned
-artifact and managed llama.cpp b11146, not to every Gemma variant or host.
+artifact and managed llama.cpp b11146, not to every Gemma variant or host. Its embedded template
+and pinned runtime support the same request-scoped Fast/Deep control as curated Qwen; matched live
+Gemma Fast/Deep turns still require the manual acceptance described in the chat handoff.
 
 ```bash
 ./knemora models
@@ -172,8 +174,6 @@ See [Upgrading and data preservation](upgrading.md#manual-upgrade-and-data-prese
 ```bash
 ./knemora start
 ./knemora start --with-presets
-./knemora start --yes-web-search
-./knemora start --with-presets --yes-web-search
 ./knemora stop
 ./knemora restart
 ./knemora status
@@ -205,10 +205,11 @@ graphs over the portable Wiki. See [optional external viewers](external-viewers.
 opening the Markdown files elsewhere.
 
 After software and model assets are installed, private Wiki, dataset, and local chat operation
-require no hosted service. Public web search is disabled by default. Starting with
-`--yes-web-search` enables the optional DDGS-backed integration for that runtime profile, but a
-chat turn must still explicitly request public web results before only that public query is sent to
-the external provider. Starting again without the flag restores the offline default.
+require no hosted service. Public web search starts OFF by default. In Direct, the browser control
+may temporarily turn it ON or OFF for that mounted chat session; each enabled turn sends only the
+restricted current-message query to the external provider. Wiki can never search the public web.
+Set `KNEMORA_WEB_SEARCH_ENABLED=true` to start Direct sessions ON. Ordinary `./knemora start`
+re-reads `.env`, and a backend restart causes mounted clients to discard stale overrides.
 
 ## Optional ADK developer playground
 

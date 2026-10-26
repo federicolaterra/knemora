@@ -31,9 +31,23 @@ artifact and managed llama.cpp b11146. Catalog listing never downloads or select
 remains the default.
 
 Both Wiki and Direct chat modes use this same active model and provider path. Direct is not a
-second client or model: it is an ADK invocation with retrieval tools withheld. It therefore makes
-no Wiki, document, dataset, graph, source, or public-search calls, but it does not imply a universal
-latency improvement.
+second client or model: it is an ADK invocation with private retrieval tools withheld. Its optional
+public search is a separate pre-model application step, not an ADK tool. Direct does not imply a
+universal latency improvement.
+
+Chat thinking control is request-scoped and provider-neutral. Curated Qwen templates declare
+`chat_template_enable_thinking` and the adapter sends the frozen value as
+`chat_template_kwargs.enable_thinking` on every request in the turn. The exact curated Gemma 4 E4B
+GGUF template also branches on that boolean and is registered with the same verified capability,
+matching Google's [Gemma 4 thinking guidance](https://ai.google.dev/gemma/docs/capabilities/thinking)
+and llama.cpp's documented
+[`chat_template_kwargs`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+Custom models remain unverified unless a future capability record says otherwise. Fast is the
+missing-setting default. Unsupported or unverified explicit modes fail clearly; controls do
+not restart llama.cpp, reload the GGUF, enlarge context, expose hidden reasoning, or alter the
+separately configured version-1 knowledge compiler. Managed llama.cpp b11146 was inspected and its
+installed build reports `0.5.0-dev` at commit `7fe450e19`. The template and request path were
+verified read-only; matched real Fast/Deep generation remains a separate manual acceptance step.
 
 Content-free telemetry separates provider duration, llama.cpp prefill/decode timings, time to first
 streamed token/visible delta, history preparation, ADK session setup and replay, persistence, model,

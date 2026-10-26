@@ -10,6 +10,16 @@ checksum. Model prompts treat document and conversation content as untrusted dat
 arbitrary shell, filesystem, SQL, formula, or code-execution tool. Logs and metrics exclude prompts,
 responses, credentials, access tokens, document bodies, and hidden reasoning.
 
+Wiki chat is always local-only: its ADK execution receives no public-search schema or dispatch
+authority, and Wiki+Web API requests fail before any outbound call. Public search is Direct-only;
+the `.env` value is a startup default and an explicit Direct request may override it. The external query is
+derived solely from the current message and fails closed for common private-context references,
+URLs, email addresses, UUIDs, and credential-like text. Conversation history, prior Wiki-derived
+answers, private tool output, and raw search results are not sent to the search backend or stored
+as execution badges. Returned snippets remain untrusted data. These conservative checks reduce
+risk but are not a perfect sensitive-data classifier; users must not place secrets in public
+queries.
+
 Knemora sends no telemetry. Keep the API bound to trusted interfaces, configure strong unique
 credentials, restrict CORS/hosts, patch dependencies, and maintain encrypted backups. See the
 [security policy](../../.github/SECURITY.md) for private vulnerability reporting.

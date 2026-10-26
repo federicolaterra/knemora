@@ -6,6 +6,34 @@ export interface ProblemDetail {
 }
 
 export type ResponseMode = "wiki" | "direct";
+export type ThinkingMode = "fast" | "deep";
+
+export interface ChatExecutionMetadata {
+  response_mode: ResponseMode;
+  model_id: string;
+  model_name: string;
+  model_revision: string | null;
+  thinking_mode: ThinkingMode | null;
+  thinking_control: string;
+  web_requested: boolean;
+  web_attempted: boolean;
+  web_succeeded: boolean;
+  web_outcome: "off" | "success" | "no_results" | "error";
+}
+
+export interface ChatCapabilities {
+  runtime_session_id: string;
+  model_id: string;
+  model_name: string;
+  model_revision: string | null;
+  thinking_default: ThinkingMode;
+  thinking_controllable: boolean;
+  supported_thinking_modes: ThinkingMode[];
+  thinking_unavailable_reason: string | null;
+  web_search_default: boolean;
+  web_search_available: boolean;
+  web_search_unavailable_reason: string | null;
+}
 
 export interface SystemMetadata {
   product: {
@@ -154,6 +182,7 @@ export interface Message {
   content: string;
   model?: string | null;
   created_at?: string | null;
+  execution?: ChatExecutionMetadata | null;
 }
 
 export interface PageSummary {

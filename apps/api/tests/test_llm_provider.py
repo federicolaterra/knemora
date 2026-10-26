@@ -59,6 +59,40 @@ def test_local_provider_health_and_chat_contract() -> None:
     asyncio.run(exercise())
 
 
+def test_local_provider_applies_request_scoped_thinking_without_mutating_default() -> None:
+    observed: list[bool] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        observed.append(payload["chat_template_kwargs"]["enable_thinking"])
+        return httpx.Response(
+            200,
+            json={
+                "model": "configured-model",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+                ],
+            },
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = LocalLlamaCppProvider(
+                base_url="http://llama.test",
+                model="configured-model",
+                enable_thinking=False,
+                thinking_control="chat_template_enable_thinking",
+                client=client,
+            )
+            request = (ChatMessage(role="user", content="Hello"),)
+            await provider.chat(ChatRequest(messages=request))
+            await provider.chat(ChatRequest(messages=request, thinking=True))
+            await provider.chat(ChatRequest(messages=request, thinking=False))
+
+    asyncio.run(exercise())
+    assert observed == [False, True, False]
+
+
 @pytest.mark.parametrize(
     ("provider_error", "expected_error"),
     [

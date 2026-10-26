@@ -207,8 +207,10 @@ navigation.
 AI (SI) Chat keeps the eight most recently active conversations in its existing aside. **View all** opens
 the authenticated `/chat/conversations` history table with server-side title search and 15 records
 per page. Conversation titles can be renamed inline; otherwise the first persisted user prompt
-provides a deterministic title without an external model call. Persisted prompt timestamps are
-grouped by the prompt's local calendar day and rendered in the browser timezone.
+provides a deterministic title without an external model call. Persisted timestamps are stored as
+unambiguous UTC instants and rendered in the browser timezone. A date separator appears only after
+a persisted assistant response establishes that response's local calendar day, so an optimistic
+prompt never creates an empty or premature day group.
 
 ## Wiki / Direct Chat Modes
 
@@ -218,12 +220,19 @@ organization-specific questions use authorized Wiki/source retrieval and exact p
 ordinary conversation and bounded arithmetic keep their existing non-retrieval routes.
 
 **Direct** sends the turn through the same Google ADK root agent, provider-neutral `LLMProvider`,
-llama.cpp runtime, and selected local model with all Wiki, source, dataset, graph, and public-web
-tools withheld. It can use visible conversation text for continuity but does not freshly verify
-private knowledge or produce new source grounding. Switch back to Wiki when an answer must be
-checked against organizational evidence. Changing modes never changes earlier messages or
-citations, and no speed improvement is implied. See [AI (SI) Chat modes](docs/open-source/chat.md)
-for API, privacy, history, and switching details.
+llama.cpp runtime, and selected local model with all Wiki, source, dataset, and graph tools
+withheld. It can use visible conversation text for continuity but does not freshly verify private
+knowledge or produce new source grounding. Public search is a separate, Direct-only one-message
+option described below. Changing modes never changes earlier messages or citations, and no speed
+improvement is implied.
+
+The matching compact **Fast / Deep** selector is also per request. Fast requests template thinking
+off; Deep requests it on only when the selected model/runtime capability is verified. The curated
+Qwen3 8B and Gemma 4 E4B entries both expose Fast and Deep; unsupported or unverified modes are
+disabled or rejected rather than mislabelled. These controls do not reload
+the model, change context size, persist hidden reasoning, or alter knowledge compilation. Each
+assistant footer reports server-confirmed model and execution metadata. See
+[AI (SI) Chat modes](docs/open-source/chat.md) for API, privacy, history, and switching details.
 
 ## Portable backups
 
@@ -342,23 +351,28 @@ accessible searchable page list with the same native detail navigation.
 
 ## Explicit public web search
 
-Chat remains private/local by default and public search is disabled by default. Enable it for one
-managed runtime profile with either command:
+Chat remains private/local by default because `KNEMORA_WEB_SEARCH_ENABLED=false` is the shipped
+startup default. In **Direct**, the user may switch **Web** ON or OFF without another launcher flag
+or restart. The choice is a temporary browser-session preference retained across messages until it
+is changed, the page is reloaded, or the backend runtime restarts. Wiki always presents Web OFF and
+the backend rejects every Wiki+Web request before network access.
 
-```bash
-./knemora start --yes-web-search
-./knemora start --with-presets --yes-web-search
-```
+Each accepted Direct+Web turn makes exactly one bounded initial DDGS/DuckDuckGo attempt. Its query
+is derived only from the current message; requests containing URLs,
+email addresses, credential-like text, UUIDs, or references to private documents, Wiki/history, or
+prior answers fail closed. No classifier can guarantee sensitivity detection, so users should keep
+private text out of public queries.
 
-Even when enabled, the current prompt must explicitly ask to search the web, internet, online,
-external, current, or outside-the-Wiki sources before the agent may use its bounded `search_web`
-tool. Only the public search query leaves the machine; private Wiki pages, source records,
-credentials, and internal IDs are excluded. External titles/snippets are treated as untrusted,
-shown separately from Wiki evidence, and cited with their returned URLs.
+Only that bounded query leaves the machine. Private Wiki pages, source records, prior answers,
+conversation history, credentials, and internal IDs are never used to construct it. External
+titles and snippets are untrusted prompt data, are not Wiki evidence, and use only returned safe
+HTTP(S) URLs. Timeout, error, and zero-result outcomes are disclosed and persisted as metadata;
+raw results are not stored in message metadata.
 
-Public search uses DDGS with a DuckDuckGo backend and requires network access. A normal launch
-without the flag forces `KNEMORA_WEB_SEARCH_ENABLED=false`; result and timeout bounds are
-controlled by `KNEMORA_WEB_SEARCH_MAX_RESULTS` and `KNEMORA_WEB_SEARCH_TIMEOUT_SECONDS`.
+Public search uses DDGS with a DuckDuckGo backend and requires network access.
+`KNEMORA_WEB_SEARCH_ENABLED` sets the initial Direct Web state at startup; `./knemora start` and
+`./knemora start --with-presets` re-read it from `.env`. Result and timeout bounds are controlled by
+`KNEMORA_WEB_SEARCH_MAX_RESULTS` and `KNEMORA_WEB_SEARCH_TIMEOUT_SECONDS`.
 
 ## Google ADK developer playground
 
@@ -379,7 +393,7 @@ instead of starting a duplicate; other listeners are never stopped or replaced.
 Use the playground's own chat to inspect its Events and Trace views. Requests sent through the
 normal Knemora UI use a separate FastAPI/ADK execution path and do not automatically appear there.
 The playground is a local, unauthenticated development server and is never started by normal
-`./knemora start`. Add `--yes-web-search` after `adk-web` only when public-search testing is needed.
+`./knemora start`. It reads the same `.env` startup defaults as the application.
 
 To reclaim only the preset files and their isolated database, run `./knemora delete --presets` and
 confirm the prompt (or use `./knemora --yes delete --presets`). The downloaded model, normal Wiki,

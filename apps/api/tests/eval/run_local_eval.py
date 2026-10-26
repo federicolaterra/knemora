@@ -52,7 +52,6 @@ def _grade(
             "get_backlinks",
             "read_source_reference",
             "analyze_dataset",
-            "search_web",
         }
         scores["required_knowledge_tool"] = int(bool(allowed.intersection(calls)))
         grounded = all(
@@ -201,6 +200,7 @@ async def run(dataset_path: Path, output_path: Path) -> int:
         timeout_seconds=settings.llm_timeout_seconds,
         context_tokens=settings.llm_context_tokens,
         enable_thinking=settings.llm_enable_thinking,
+        thinking_control=settings.llm_thinking_control,
         api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else None,
     )
     engine = create_database_engine(settings.database_url)

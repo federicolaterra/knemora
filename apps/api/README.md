@@ -54,9 +54,13 @@ Primary endpoints:
 - `POST /api/v1/wiki/rebuild-index` — rebuild deterministic lexical/index files;
 - `GET /api/v1/wiki/lint` — report schema, link, and orphan health.
 
-Agent behavior lives in `knowledge_agent/`. `search_web` is enabled only when the current user turn
-explicitly requests external results and the runtime was started with `--yes-web-search`; it sends no Wiki/source
-content and returns untrusted snippets and URLs. It is disabled by default. The optional
+Agent behavior lives in `knowledge_agent/`. Wiki executions have exactly the bounded local tools
+and never receive public-search authority. Public search is a Direct-only application step whose
+request-level `web_search` value may override the `.env` startup default. Every enabled turn derives
+a restricted query only from the current message, makes one bounded DDGS/DuckDuckGo attempt, and
+returns untrusted snippets and safe URLs to that invocation. `GET /api/v1/chat/capabilities`
+reports the runtime identity, safe startup defaults, and selected-model control support without
+private paths or secrets. The optional
 repository-root `./knemora --dev adk-web` command starts the official ADK developer UI with this
 same package and environment. Tests inject fake LLM/search providers and never require the real
 model or internet. Implementation and contributor guidance is in the public
@@ -72,3 +76,10 @@ and language-neutral follow-ups inherit the established conversation language wh
 Simple two-operand expressions and operator-led arithmetic follow-ups are evaluated with bounded
 decimal operations. Follow-ups accept a bare or uniquely emphasized preceding numeric answer; they
 do not execute model-generated code or `eval`.
+
+The message endpoints also accept optional `thinking_mode: fast | deep` and
+`web_search: boolean`. Unsupported thinking modes and Wiki+Web combinations fail with HTTP 422.
+Assistant rows persist actual execution metadata in the existing JSON metadata column, including
+model, response mode, thinking capability/mode, and distinct Web request/attempt/success/outcome
+fields. No migration or separate chat store is required; legacy rows serialize execution metadata
+as null.

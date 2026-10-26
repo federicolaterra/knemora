@@ -433,8 +433,7 @@ class UpdateService:
         runtime = RuntimeManager(self.paths, detect_platform())
         was_running = any(item.running for item in runtime.status() if item.name != "database")
         mode = runtime.current_mode()
-        web_search = runtime.current_web_search_enabled()
-        job.update(was_running=was_running, mode=mode, web_search_enabled=web_search)
+        job.update(was_running=was_running, mode=mode)
         self._write_job(job)
         self._write_json(
             self.maintenance_path,
@@ -477,8 +476,6 @@ class UpdateService:
         start_arguments = ["--non-interactive", "--no-open", "start"]
         if mode == "development":
             start_arguments.append("--with-presets")
-        if web_search:
-            start_arguments.append("--yes-web-search")
         self._run_launcher(repository, *start_arguments)
         self.maintenance_path.unlink(missing_ok=True)
         self._advance(job, "verifying", "Verifying service readiness and activated revision.")
@@ -510,7 +507,6 @@ class UpdateService:
                 demo=job.get("mode") == "development",
                 open_apps=False,
                 demo_database_prepared=job.get("mode") == "development",
-                web_search_enabled=job.get("web_search_enabled") is True,
             )
         except Exception as recovery_error:
             job["recovery_error"] = str(recovery_error)

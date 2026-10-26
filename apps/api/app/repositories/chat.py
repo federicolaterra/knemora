@@ -5,6 +5,7 @@ from __future__ import annotations
 import unicodedata
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import exists, func, or_, select, update
 from sqlalchemy.orm import Session
@@ -142,6 +143,7 @@ class ChatRepository:
         role: str,
         content: str,
         provider_model: str | None = None,
+        message_metadata: dict[str, Any] | None = None,
     ) -> Message:
         max_sequence = self._session.scalar(
             select(func.max(Message.sequence)).where(Message.conversation_id == conversation_id)
@@ -152,6 +154,7 @@ class ChatRepository:
             role=role,
             content=content,
             provider_model=provider_model,
+            message_metadata=message_metadata or {},
         )
         self._session.add(message)
         self._session.flush()

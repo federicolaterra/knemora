@@ -58,6 +58,7 @@ class ModelSpec:
     attention_head_count_kv: int | None = None
     attention_key_length: int | None = None
     attention_value_length: int | None = None
+    thinking_control: str = "unverified"
 
     @property
     def download_url(self) -> str:
@@ -94,6 +95,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         attention_head_count=32,
         attention_head_count_kv=8,
         license_url="https://huggingface.co/ISTA-DASLab/Qwen3-8B-GGUF-GSQ",
+        thinking_control="chat_template_enable_thinking",
     ),
     "qwen3.8-27b-iq2-s": ModelSpec(
         id="qwen3.8-27b-iq2-s",
@@ -112,6 +114,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         metadata_architecture="qwen3",
         advertised_context_tokens=32_768,
         license_url="https://huggingface.co/ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
+        thinking_control="chat_template_enable_thinking",
     ),
     "gemma-4-e4b-q4-k-m": ModelSpec(
         id="gemma-4-e4b-q4-k-m",
@@ -139,6 +142,7 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
         attention_key_length=512,
         attention_value_length=512,
         license_url="https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF",
+        thinking_control="chat_template_enable_thinking",
     ),
 }
 

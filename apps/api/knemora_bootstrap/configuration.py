@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 import os
 import secrets
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from knemora_bootstrap.model_context import ContextPlan, ModelContextError
-from knemora_bootstrap.models import ModelSpec
+from knemora_bootstrap.models import ModelError, ModelSpec, get_model
 
 MANAGED_EFFECTIVE_CONTEXT_ORIGIN = "managed-effective"
 
@@ -258,6 +259,8 @@ def write_model_selection(
         "safe_memory_budget_bytes": plan.memory.safe_budget_bytes,
         "memory_estimate_uncertainty": plan.memory.uncertainty,
         "sha256": model.sha256,
+        "revision": model.revision,
+        "thinking_control": model.thinking_control,
         "context_overrides": overrides,
     }
     if isinstance(previous, dict) and previous:
@@ -376,7 +379,6 @@ def runtime_environment(
     paths: AppPaths,
     *,
     demo: bool = False,
-    web_search_enabled: bool | None = None,
 ) -> dict[str, str]:
     """Build child-process configuration without printing secret values."""
 
@@ -384,22 +386,37 @@ def runtime_environment(
     model_file = paths.config / "model.json"
     if model_file.is_file():
         model = json.loads(model_file.read_text(encoding="utf-8"))
-        values.update(
-            {
-                "KNEMORA_MODEL_PATH": str(model["path"]),
-                "KNEMORA_LLM_MODEL": str(model["model_id"]),
-                "KNEMORA_LLM_QUANTIZATION": str(model["quantization"]),
-                "KNEMORA_LLM_CONTEXT_TOKENS": str(model["context_tokens"]),
-                "KNEMORA_LLM_CONTEXT_ORIGIN": MANAGED_EFFECTIVE_CONTEXT_ORIGIN,
-                "KNEMORA_LLM_CONTEXT_SOURCE": str(model.get("context_source", "legacy selection")),
-            }
+        selected_model: ModelSpec | None = None
+        with suppress(KeyError, ModelError):
+            selected_model = get_model(str(model["model_id"]), paths.model_registry)
+        revision = model.get("revision") or (
+            selected_model.revision if selected_model is not None else None
         )
+        model_values = {
+            "KNEMORA_MODEL_PATH": str(model["path"]),
+            "KNEMORA_LLM_MODEL": str(model["model_id"]),
+            "KNEMORA_LLM_DISPLAY_NAME": str(
+                model.get("display_name")
+                or (
+                    selected_model.display_name if selected_model is not None else model["model_id"]
+                )
+            ),
+            "KNEMORA_LLM_THINKING_CONTROL": str(
+                model.get("thinking_control")
+                or (selected_model.thinking_control if selected_model is not None else "unverified")
+            ),
+            "KNEMORA_LLM_QUANTIZATION": str(model["quantization"]),
+            "KNEMORA_LLM_CONTEXT_TOKENS": str(model["context_tokens"]),
+            "KNEMORA_LLM_CONTEXT_ORIGIN": MANAGED_EFFECTIVE_CONTEXT_ORIGIN,
+            "KNEMORA_LLM_CONTEXT_SOURCE": str(model.get("context_source", "legacy selection")),
+        }
+        if revision:
+            model_values["KNEMORA_LLM_REVISION"] = str(revision)
+        values.update(model_values)
     values["KNEMORA_RUNTIME_DIR"] = str(paths.runtime)
     values["KNEMORA_LOG_DIR"] = str(paths.logs)
     values["KNEMORA_HOME"] = str(paths.data)
     values["KNEMORA_HOME_COMPATIBILITY_REQUIRED"] = "true"
-    if web_search_enabled is not None:
-        values["KNEMORA_WEB_SEARCH_ENABLED"] = "true" if web_search_enabled else "false"
     if demo:
         values["KNEMORA_DEMO_MODE"] = "true"
         values["KNEMORA_DEMO_PRESET"] = "development"

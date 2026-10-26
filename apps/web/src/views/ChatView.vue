@@ -4,6 +4,7 @@ import {
   Check,
   CircleQuestionMark,
   Clipboard,
+  Globe2,
   ArrowRight,
   MessageSquarePlus,
   Pencil,
@@ -22,8 +23,19 @@ import ChatResponseContent from "../components/ChatResponseContent.vue";
 import PageHeader from "../components/PageHeader.vue";
 import { useSystemStore } from "../stores/system";
 import { useWorkspaceStore } from "../stores/workspace";
-import type { Conversation, Message, ResponseMode } from "../types";
-import { groupMessagesByPromptDay, promptTimeLabel } from "../utils/chatDates";
+import type {
+  ChatCapabilities,
+  ChatExecutionMetadata,
+  Conversation,
+  Message,
+  ResponseMode,
+  ThinkingMode,
+} from "../types";
+import {
+  groupMessagesByPromptDay,
+  localDateTimeTitle,
+  promptTimeLabel,
+} from "../utils/chatDates";
 
 const route = useRoute();
 const router = useRouter();
@@ -52,11 +64,35 @@ const { textarea, input } = useTextareaAutosize({ styleProp: "height" });
 void textarea;
 const progress = ref("Understanding request…");
 const responseMode = ref<ResponseMode>("wiki");
-const modeHelp = computed(() =>
-  responseMode.value === "wiki"
-    ? "Wiki: answers grounded in your knowledge"
-    : "Direct: local AI without knowledge search",
-);
+const thinkingMode = ref<ThinkingMode | null>(null);
+const thinkingOptions: ThinkingMode[] = ["fast", "deep"];
+const directWebPreference = ref(false);
+const chatCapabilities = ref<ChatCapabilities | null>(null);
+const runtimeSessionId = ref<string | null>(null);
+const webSearch = computed({
+  get: () => responseMode.value === "direct" && directWebPreference.value,
+  set: (enabled: boolean) => {
+    if (responseMode.value === "direct") directWebPreference.value = enabled;
+  },
+});
+const webHelp = computed(() => {
+  if (responseMode.value === "wiki")
+    return "Web unavailable in Wiki to keep private knowledge local";
+  return webSearch.value
+    ? "Web ON for this browser session"
+    : "Web OFF · local model only";
+});
+
+function thinkingOptionTitle(option: ThinkingMode): string {
+  if (!chatCapabilities.value?.supported_thinking_modes.includes(option))
+    return (
+      chatCapabilities.value?.thinking_unavailable_reason ??
+      `${option === "deep" ? "Deep" : "Fast"} is unavailable for the selected model.`
+    );
+  return option === "deep"
+    ? "Deep: requests model thinking when supported"
+    : "Fast: requests thinking off";
+}
 let progressTimer: ReturnType<typeof setInterval> | undefined;
 const wikiProgressSteps = [
   "Understanding request…",
@@ -65,11 +101,63 @@ const wikiProgressSteps = [
   "Generating response…",
 ];
 const directProgressSteps = ["Generating answer…"];
+const directWebProgressSteps = ["Searching public web…", "Generating answer…"];
 const demoPrompt =
   "Which gateway, owner, policy, and freeze day apply to ORBIT-LANTERN? Cite sources.";
 
 function roundedTiming(value: number | null): number | null {
   return value === null ? null : Number(value.toFixed(3));
+}
+
+function modelLabel(message: Message): string | null {
+  return message.execution?.model_name || message.model || null;
+}
+
+function thinkingLabel(
+  execution?: ChatExecutionMetadata | null,
+): string | null {
+  if (!execution?.thinking_mode) return null;
+  return execution.thinking_mode === "deep" ? "Deep" : "Fast";
+}
+
+function responseModeLabel(
+  execution?: ChatExecutionMetadata | null,
+): string | null {
+  if (!execution) return null;
+  return execution.response_mode === "direct" ? "Direct" : "Wiki";
+}
+
+function webLabel(execution?: ChatExecutionMetadata | null): string | null {
+  if (!execution) return null;
+  if (!execution.web_requested) return "Web OFF";
+  if (execution.web_outcome === "error") return "Web ON (failed)";
+  if (execution.web_outcome === "no_results") return "Web ON (no results)";
+  return execution.web_succeeded ? "Web ON" : "Web ON (not completed)";
+}
+
+async function loadChatCapabilities(): Promise<boolean> {
+  try {
+    const capabilities = await api.readChatCapabilities();
+    const runtimeChanged =
+      runtimeSessionId.value !== capabilities.runtime_session_id;
+    chatCapabilities.value = capabilities;
+    if (runtimeChanged) {
+      runtimeSessionId.value = capabilities.runtime_session_id;
+      const supported = capabilities.supported_thinking_modes;
+      thinkingMode.value = supported.includes(capabilities.thinking_default)
+        ? capabilities.thinking_default
+        : (supported[0] ?? null);
+      directWebPreference.value = capabilities.web_search_default;
+    }
+    return true;
+  } catch {
+    if (runtimeSessionId.value === null) {
+      chatCapabilities.value = null;
+      thinkingMode.value = null;
+      directWebPreference.value = false;
+    }
+    return false;
+  }
 }
 
 const activeConversation = computed(
@@ -198,10 +286,27 @@ async function confirmConversationDeletion() {
 
 async function send(content = input.value.trim()) {
   if (!content || loading.value) return;
+  if (!(await loadChatCapabilities())) {
+    error.value =
+      "Unable to verify the current chat runtime settings. Try again.";
+    return;
+  }
   if (!activeId.value) await newConversation(false);
   const submittedMode = responseMode.value;
+  const submittedThinking =
+    thinkingMode.value !== null &&
+    chatCapabilities.value?.supported_thinking_modes.includes(
+      thinkingMode.value,
+    )
+      ? thinkingMode.value
+      : null;
+  const submittedWeb = submittedMode === "direct" && webSearch.value;
   const progressSteps =
-    submittedMode === "wiki" ? wikiProgressSteps : directProgressSteps;
+    submittedMode === "wiki"
+      ? wikiProgressSteps
+      : submittedWeb
+        ? directWebProgressSteps
+        : directProgressSteps;
   lastPrompt.value = content;
   input.value = "";
   messages.value.push(
@@ -232,6 +337,8 @@ async function send(content = input.value.trim()) {
       activeId.value,
       content,
       submittedMode,
+      submittedThinking,
+      submittedWeb,
       controller.value.signal,
       (delta) => {
         const receivedAt = performance.now();
@@ -311,6 +418,8 @@ watch(
   },
   { immediate: true },
 );
+
+void loadChatCapabilities();
 </script>
 
 <template>
@@ -380,6 +489,7 @@ watch(
         </div>
         <template v-for="group in messageGroups" :key="group.key">
           <h3
+            v-if="group.label"
             class="sticky top-0 z-[1] my-3 bg-[rgb(255_255_255_/_92%)] py-2 text-center text-caption font-bold text-muted backdrop-blur-sm"
           >
             {{ group.label }}
@@ -404,15 +514,10 @@ watch(
               >
                 {{ message.role === "user" ? "You" : system.name }}
                 <time
-                  v-if="message.role === 'user' && message.created_at"
+                  v-if="message.created_at"
                   class="ml-2 text-control font-normal text-muted"
                   :datetime="message.created_at"
-                  :title="
-                    new Date(message.created_at).toLocaleString('en', {
-                      dateStyle: 'full',
-                      timeStyle: 'long',
-                    })
-                  "
+                  :title="localDateTimeTitle(message.created_at)"
                   >{{ promptTimeLabel(message.created_at, clock) }}</time
                 >
               </p>
@@ -427,9 +532,15 @@ watch(
               <ChatResponseContent v-else :content="message.content" />
               <div
                 v-if="message.role === 'assistant' && message.content"
-                class="flex flex-wrap [gap:7px] [margin-top:12px] [&_button]:inline-flex [&_button]:[gap:5px] [&_button]:items-center [&_button]:p-0 [&_button]:[color:#71807b] [&_button]:[background:none] [&_button]:border-0 [&_button]:text-caption"
+                class="flex items-center flex-wrap [gap:7px] [margin-top:12px] [&_button]:inline-flex [&_button]:[gap:5px] [&_button]:items-center [&_button]:p-0 [&_button]:[color:#71807b] [&_button]:[background:none] [&_button]:border-0 [&_button]:text-caption"
               >
                 <button
+                  v-if="message === messages[messages.length - 1] && !loading"
+                  type="button"
+                  @click="send(lastPrompt)"
+                >
+                  <RotateCcw :size="14" /> Retry</button
+                ><button
                   type="button"
                   @click="copyMessage(message, message.id || message.content)"
                 >
@@ -441,13 +552,21 @@ watch(
                       ? "Copied"
                       : "Copy"
                   }}</button
-                ><button
-                  v-if="message === messages[messages.length - 1] && !loading"
-                  type="button"
-                  @click="send(lastPrompt)"
-                >
-                  <RotateCcw :size="14" /> Retry
-                </button>
+                ><template v-if="modelLabel(message)">
+                  <span class="text-muted" aria-hidden="true">|</span>
+                  <span class="text-caption text-muted">
+                    {{ modelLabel(message) }}
+                    <template v-if="responseModeLabel(message.execution)">
+                      · {{ responseModeLabel(message.execution) }}
+                    </template>
+                    <template v-if="thinkingLabel(message.execution)">
+                      · {{ thinkingLabel(message.execution) }}
+                    </template>
+                    <template v-if="webLabel(message.execution)">
+                      · {{ webLabel(message.execution) }}
+                    </template>
+                  </span>
+                </template>
               </div>
               <div
                 v-if="sourceDocuments(message.content).length"
@@ -506,13 +625,10 @@ watch(
             <Send :size="17" />
           </button>
         </div>
-        <div
-          class="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 pb-1"
-        >
+        <div class="flex min-w-0 flex-wrap items-center gap-2 px-2 pb-1">
           <fieldset
-            class="m-0 flex shrink-0 rounded-control border border-line bg-[#edf1ee] p-[2px]"
+            class="m-0 flex shrink-0 rounded-control border border-line bg-[#edf1ee] p-px"
             aria-label="Response mode"
-            :disabled="loading"
           >
             <legend class="sr-only">Response mode</legend>
             <label
@@ -525,9 +641,10 @@ watch(
                 type="radio"
                 name="response-mode"
                 value="wiki"
+                :disabled="loading"
               />
               <span
-                class="block rounded-[5px] px-2 py-1 [font-size:11px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                class="block rounded-[5px] px-[7px] py-[3px] [font-size:10px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
                 >Wiki</span
               >
             </label>
@@ -541,18 +658,62 @@ watch(
                 type="radio"
                 name="response-mode"
                 value="direct"
+                :disabled="loading"
               />
               <span
-                class="block rounded-[5px] px-2 py-1 [font-size:11px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                class="block rounded-[5px] px-[7px] py-[3px] [font-size:10px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
                 >Direct</span
               >
             </label>
           </fieldset>
-          <p
-            class="m-0 min-w-0 text-right [font-size:11px] text-muted mobile:text-left"
+          <fieldset
+            class="m-0 flex shrink-0 rounded-control border border-line bg-[#edf1ee] p-px"
+            aria-label="Thinking mode"
           >
-            {{ modeHelp }}
-          </p>
+            <legend class="sr-only">Thinking mode</legend>
+            <label
+              v-for="option in thinkingOptions"
+              :key="option"
+              class="cursor-pointer"
+              :title="thinkingOptionTitle(option)"
+            >
+              <input
+                v-model="thinkingMode"
+                class="peer sr-only"
+                type="radio"
+                name="thinking-mode"
+                :value="option"
+                :disabled="
+                  loading ||
+                  !chatCapabilities?.supported_thinking_modes.includes(option)
+                "
+              />
+              <span
+                class="block rounded-[5px] px-[7px] py-[3px] [font-size:10px] font-bold capitalize text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                >{{ option }}</span
+              >
+            </label>
+          </fieldset>
+          <label
+            class="inline-flex shrink-0 cursor-pointer rounded-control border border-line bg-[#edf1ee] p-px"
+            :title="webHelp"
+          >
+            <input
+              v-model="webSearch"
+              class="peer sr-only"
+              type="checkbox"
+              :disabled="
+                loading ||
+                responseMode === 'wiki' ||
+                !chatCapabilities?.web_search_available
+              "
+            />
+            <span
+              class="inline-flex items-center gap-1 rounded-[5px] px-[7px] py-[3px] [font-size:10px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+            >
+              <Globe2 :size="12" /> Web {{ webSearch ? "ON" : "OFF" }}
+            </span>
+          </label>
         </div>
       </form>
       <p

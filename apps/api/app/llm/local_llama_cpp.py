@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -44,6 +44,9 @@ class LocalLlamaCppProvider:
         timeout_seconds: float = 120.0,
         context_tokens: int = 8192,
         enable_thinking: bool = False,
+        thinking_control: Literal[
+            "chat_template_enable_thinking", "fixed_off", "unverified"
+        ] = "unverified",
         api_key: str | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -52,6 +55,7 @@ class LocalLlamaCppProvider:
         self._timeout = timeout_seconds
         self._context_tokens = context_tokens
         self._enable_thinking = enable_thinking
+        self._thinking_control = thinking_control
         self._api_key = api_key
         self._client = client
 
@@ -62,6 +66,7 @@ class LocalLlamaCppProvider:
             structured_output=True,
             cancellation=True,
             max_context_tokens=self._context_tokens,
+            thinking_control=self._thinking_control,
         )
 
     def _headers(self) -> dict[str, str]:
@@ -76,7 +81,11 @@ class LocalLlamaCppProvider:
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
             "stream": stream,
-            "chat_template_kwargs": {"enable_thinking": self._enable_thinking},
+            "chat_template_kwargs": {
+                "enable_thinking": (
+                    self._enable_thinking if request.thinking is None else request.thinking
+                )
+            },
         }
         if request.response_schema is not None:
             payload["response_format"] = {
@@ -307,6 +316,9 @@ class LocalLlamaCppProvider:
                         "effective_context_tokens": self._context_tokens,
                         "stream": False,
                         "tools_count": len(request.tools),
+                        "thinking": (
+                            self._enable_thinking if request.thinking is None else request.thinking
+                        ),
                     }
                 },
             )
@@ -477,6 +489,9 @@ class LocalLlamaCppProvider:
                         "effective_context_tokens": self._context_tokens,
                         "stream": True,
                         "tools_count": len(request.tools),
+                        "thinking": (
+                            self._enable_thinking if request.thinking is None else request.thinking
+                        ),
                         "outcome": outcome,
                     }
                 },

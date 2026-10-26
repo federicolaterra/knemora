@@ -208,6 +208,9 @@ def test_context_precedence_and_managed_child_effective_value_is_not_explicit(
 
     (repository / ".env").unlink()
     managed_child = runtime_environment(paths)
+    assert managed_child["KNEMORA_LLM_DISPLAY_NAME"] == model.display_name
+    assert managed_child["KNEMORA_LLM_REVISION"] == model.revision
+    assert managed_child["KNEMORA_LLM_THINKING_CONTROL"] == model.thinking_control
     monkeypatch.setattr("knemora_bootstrap.configuration.os.environ", managed_child)
     preference = resolve_context_preference(paths, model)
     assert (preference.tokens, preference.source, preference.explicit) == (

@@ -9,9 +9,7 @@ import uuid
 from collections.abc import Callable
 from functools import wraps
 from typing import Any
-from urllib.parse import urlparse
 
-from ddgs import DDGS
 from google.adk.tools.tool_context import ToolContext
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -92,20 +90,6 @@ def _agent_page_payload(page: Any) -> dict[str, Any]:
             for relationship in page.relationships
         ],
         "truncated": page.truncated,
-    }
-
-
-def _bounded_web_result(item: dict[str, Any]) -> dict[str, str] | None:
-    """Keep only short text fields and ordinary public HTTP(S) result URLs."""
-
-    url = str(item.get("href") or item.get("url") or "").strip()
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    return {
-        "title": " ".join(str(item.get("title") or "Untitled result").split())[:300],
-        "snippet": " ".join(str(item.get("body") or item.get("description") or "").split())[:1_000],
-        "url": url[:2_000],
     }
 
 
@@ -356,62 +340,6 @@ def create_agent_tools(
         except (KnowledgeError, PermissionError, ValueError) as exc:
             return {"status": "error", "error": str(exc)}
 
-    def search_web(
-        query: str,
-        limit: int,
-        tool_context: ToolContext,
-    ) -> dict[str, Any]:
-        """Search bounded public web results after the current user explicitly opts in.
-
-        Args:
-            query: Public search terms from the user's explicit request. Never include private Wiki
-                text, source records, credentials, or opaque internal identifiers.
-            limit: Maximum result count from 1 to the configured public-search limit.
-
-        Returns:
-            Untrusted external titles, snippets, and source URLs for separately labelled citation.
-        """
-
-        if not settings.web_search_enabled:
-            return {"status": "error", "error": "Public web search is disabled."}
-        if not bool(tool_context.state.get("external_search_allowed", False)):
-            return {
-                "status": "error",
-                "error": (
-                    "Public web search requires an explicit request in the current user message."
-                ),
-            }
-        cleaned = " ".join(query.split())
-        if not cleaned:
-            return {"status": "error", "error": "A public search query is required."}
-        if len(cleaned) > 300:
-            return {"status": "error", "error": "The public search query is too long."}
-        bounded_limit = max(1, min(limit, settings.web_search_max_results))
-        try:
-            raw_results = DDGS(timeout=settings.web_search_timeout_seconds).text(
-                cleaned,
-                max_results=bounded_limit,
-                backend="duckduckgo",
-            )
-            results = [
-                bounded
-                for item in raw_results
-                if isinstance(item, dict) and (bounded := _bounded_web_result(item)) is not None
-            ][:bounded_limit]
-        except Exception as exc:  # The third-party backend exposes provider-specific failures.
-            logger.warning("public_web_search_failed error_type=%s", type(exc).__name__)
-            return {
-                "status": "error",
-                "error": "Public web search is temporarily unavailable.",
-            }
-        return {
-            "status": "success",
-            "source": "external_web",
-            "query": cleaned,
-            "untrusted": True,
-            "results": results,
-        }
-
     return [
         _instrument_tool(tool)
         for tool in (
@@ -421,7 +349,6 @@ def create_agent_tools(
             get_backlinks,
             read_source_reference,
             analyze_dataset,
-            search_web,
         )
     ]
 

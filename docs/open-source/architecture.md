@@ -2,7 +2,7 @@
 
 Knemora Open-Source is a local-first modular monolith: Vue calls FastAPI; FastAPI enforces identity
 and authorization before domain services; Google ADK coordinates narrow knowledge, analysis, and
-explicitly opted-in public-search tools; all model calls cross `LLMProvider`; SQLite stores
+explicitly opted-in Direct public-search outcomes; all model calls cross `LLMProvider`; SQLite stores
 operational metadata; immutable bytes and the Markdown Wiki remain in explicit filesystem
 boundaries.
 
@@ -14,10 +14,12 @@ real implementation requires them.
 The open-source application includes all current core functionality without edition conditionals or
 artificial limits. Cloud infrastructure is not a prerequisite for the core.
 
-Public search is optional rather than a core dependency and is disabled for normal launches. The
-operator must add `--yes-web-search`, after which a per-turn guard still requires explicit user
-language. It sends only a bounded public query through DDGS/DuckDuckGo, treats results as
-untrusted, and keeps them separate from private Wiki evidence.
+Public search is optional rather than a core dependency. `KNEMORA_WEB_SEARCH_ENABLED` supplies a
+startup default, while an explicit Direct request may override it in either direction. FastAPI
+rejects Wiki+Web before persistence or network access. Each Direct+Web turn makes
+one deterministic bounded DDGS/DuckDuckGo attempt from a restricted query derived only from the
+current message. Results are untrusted prompt data and remain separate from private Wiki evidence;
+no autonomous web tool is exposed to ADK.
 
 Persisted SQLite messages are the chat source of truth. For each turn, FastAPI creates an isolated
 ADK session and replays only that owner-scoped conversation as ordered user/model events before
@@ -39,6 +41,13 @@ tools and independently suppresses tool schemas at the provider adapter, while r
 ADK root-agent → `LLMProvider` → llama.cpp path. Persisted history contains only native-role
 user/assistant text, not ADK tool responses. The mode is request-scoped and does not add a second
 conversation store or database schema.
+
+FastAPI also freezes request-scoped thinking and Web policy before ADK execution. The immutable
+thinking option reaches every call in that turn through `LLMProvider`; the llama.cpp adapter uses
+`chat_template_kwargs.enable_thinking` only for a verified controllable model template. Fixed-off
+and unverified models fail unsupported explicit modes clearly. Knowledge compilation constructs
+its own provider and never inherits chat UI overrides. Assistant execution metadata reuses the
+existing message JSON metadata field, so no database schema migration is required.
 
 The current implementation keeps orchestration out of the launcher and makes the
 distribution/runtime/home boundaries explicit without moving core behavior into Node:

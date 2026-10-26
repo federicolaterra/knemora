@@ -235,7 +235,7 @@ class SetupManager:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="./knemora", description="Knemora local product launcher")
-    parser.set_defaults(yes_web_search=False, with_presets=False, presets=False)
+    parser.set_defaults(with_presets=False, presets=False)
     parser.add_argument(
         "--yes", "-y", action="store_true", help="accept the first-run confirmation"
     )
@@ -334,24 +334,9 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="start the isolated Development demo",
     )
-    start.add_argument(
-        "--yes-web-search",
-        action="store_true",
-        help="enable explicit per-turn public web searches for this runtime launch",
-    )
     presets = sub.add_parser("start-with-presets")
     presets.set_defaults(with_presets=True, deprecated_replacement="start --with-presets")
-    presets.add_argument(
-        "--yes-web-search",
-        action="store_true",
-        help="enable explicit per-turn public web searches for this runtime launch",
-    )
-    adk_web = sub.add_parser("adk-web", help="start the optional Google ADK developer UI")
-    adk_web.add_argument(
-        "--yes-web-search",
-        action="store_true",
-        help="enable explicit per-turn public web searches in this playground",
-    )
+    sub.add_parser("adk-web", help="start the optional Google ADK developer UI")
     delete_target = sub.add_parser("delete", help="delete an explicitly selected Knemora target")
     delete_target.add_argument(
         "--presets",
@@ -920,7 +905,6 @@ def main(argv: list[str] | None = None) -> int:
             settings = _backup_settings(paths)
             services_running = _runtime_processes_active(runtime)
             active_demo = runtime.current_mode() == "development"
-            web_search_enabled = runtime.current_web_search_enabled()
             if args.backup_type == "full" and services_running:
                 print("Pausing Knemora writers for a coherent full backup…")
                 runtime.stop()
@@ -937,7 +921,6 @@ def main(argv: list[str] | None = None) -> int:
                         demo=active_demo,
                         open_apps=False,
                         demo_database_prepared=active_demo,
-                        web_search_enabled=web_search_enabled,
                     )
             if args.path is not None:
                 write_backup_path(paths, destination)
@@ -1009,7 +992,7 @@ def main(argv: list[str] | None = None) -> int:
         if command == "adk-web":
             if not args.dev:
                 raise RuntimeError("ADK Web is a developer command; run ./knemora --dev adk-web.")
-            return launch_adk_web(paths, web_search_enabled=args.yes_web_search)
+            return launch_adk_web(paths)
         if command == "update":
             from knemora_bootstrap.update import UpdateService, wait_for_job
 
@@ -1229,7 +1212,6 @@ def main(argv: list[str] | None = None) -> int:
                 demo=demo,
                 open_apps=False,
                 demo_database_prepared=demo,
-                web_search_enabled=args.yes_web_search,
             )
             if demo:
                 progress.update(4, "Database, local model, API, and web app are ready.")
@@ -1238,8 +1220,12 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Canonical prompt:\n{CANONICAL_PROMPT}")
             if not args.no_open:
                 runtime.open_apps(demo=demo)
+            web_default = runtime_environment(paths).get(
+                "KNEMORA_WEB_SEARCH_ENABLED", "false"
+            ).strip().lower() in {"1", "true", "yes", "on"}
             print(
-                f"Public web search: {'enabled' if args.yes_web_search else 'disabled (default)'}"
+                f"Direct Web startup default: {'ON' if web_default else 'OFF'} "
+                "(adjustable per browser session)"
             )
             print("READY — http://localhost:5173")
             return 0

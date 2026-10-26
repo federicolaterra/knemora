@@ -54,6 +54,7 @@ class ChatRequest(BaseModel):
     response_schema: dict[str, Any] | None = None
     tools: tuple[ChatToolDefinition, ...] = ()
     tool_choice: str | dict[str, Any] | None = None
+    thinking: bool | None = None
 
 
 class ChatUsage(BaseModel):
@@ -109,6 +110,9 @@ class LLMCapabilities(BaseModel):
     structured_output: bool
     cancellation: bool
     max_context_tokens: int | None = None
+    thinking_control: Literal["chat_template_enable_thinking", "fixed_off", "unverified"] = (
+        "unverified"
+    )
 
 
 class LLMHealth(BaseModel):

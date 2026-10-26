@@ -1,6 +1,7 @@
 import type {
   AuditEventRecord,
   AuthSession,
+  ChatCapabilities,
   Conversation,
   CurrentUser,
   DatasetResult,
@@ -14,6 +15,7 @@ import type {
   RoleRecord,
   SourceDeletionOperation,
   SystemMetadata,
+  ThinkingMode,
   UpdateJob,
   UpdateSnapshot,
   WikiPage,
@@ -88,6 +90,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   readSystem: () => request<SystemMetadata>("/api/v1/system"),
+  readChatCapabilities: () =>
+    request<ChatCapabilities>("/api/v1/chat/capabilities"),
   login: (email: string, password: string) =>
     request<AuthSession>("/api/v1/auth/login", {
       method: "POST",
@@ -296,8 +300,11 @@ export async function streamMessage(
   conversationId: string,
   content: string,
   responseMode: ResponseMode,
+  thinkingMode: ThinkingMode | null,
+  webSearch: boolean,
   signal: AbortSignal,
   onDelta: (delta: string) => void,
+  onStarted?: () => void,
 ): Promise<void> {
   const response = await fetch(
     `${API_BASE}/api/v1/conversations/${conversationId}/messages/stream`,
@@ -306,7 +313,12 @@ export async function streamMessage(
       headers: authenticatedInit({
         headers: { "Content-Type": "application/json" },
       }).headers,
-      body: JSON.stringify({ content, response_mode: responseMode }),
+      body: JSON.stringify({
+        content,
+        response_mode: responseMode,
+        thinking_mode: thinkingMode,
+        web_search: webSearch,
+      }),
       signal,
     },
   );
@@ -317,6 +329,7 @@ export async function streamMessage(
       response.status,
     );
   }
+  onStarted?.();
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

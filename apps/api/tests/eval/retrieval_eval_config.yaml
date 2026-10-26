@@ -35,7 +35,7 @@ custom_metrics:
                           calls.append(call["name"])
           allowed = {
               "search_wiki", "read_wiki_page", "list_related_pages",
-              "get_backlinks", "read_source_reference", "analyze_dataset", "search_web"
+              "get_backlinks", "read_source_reference", "analyze_dataset"
           }
           return {"score": 1 if allowed.intersection(calls) else 0, "explanation": str(calls)}
 
