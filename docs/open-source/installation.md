@@ -58,9 +58,26 @@ Its published SHA-256 is pinned in the registry. Downloads use a `.partial` path
 server permits, and are promoted only after full checksum validation. Model licenses remain
 separate from Knemora's MIT license.
 
+The optional Knemora-tested `gemma-4-e4b-q4-k-m` entry is Google DeepMind's Gemma 4 E4B Instruct
+Q4_K_M distributed by Unsloth. Knemora pins revision
+`bfc15c382204943c3a8fff0c750b94ae2364d7a3`, the 4,977,171,584-byte artifact, and SHA-256
+`85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87`. It is visible but not
+downloaded or selected until explicitly requested, and Qwen remains the default and rollback model.
+The exact artifact has passed real thinking-off version-1 TXT/PDF/DOCX compilation, provenance,
+retrieval, atomicity, and idempotency acceptance. It has also passed the managed
+Qwen → Gemma → Qwen selection/readiness/preservation lifecycle, a naturally rejected unsafe-start
+rollback, and grounded behavior at the supported 4,096-token context on a 16 GiB Apple Silicon
+host. Admission remains dependent on current safe memory; this label is scoped to the pinned
+artifact and managed llama.cpp b11146, not to every Gemma variant or host. Its embedded template
+and pinned runtime support the same request-scoped Fast/Deep control as curated Qwen; matched live
+Gemma Fast/Deep turns still require the manual acceptance described in the chat handoff.
+
 ```bash
 ./knemora models
 ./knemora setup --model qwen3-8b-q3-k-m
+./knemora model info gemma-4-e4b-q4-k-m
+# Optional tested model; downloads and selects only when explicitly requested.
+./knemora setup --model gemma-4-e4b-q4-k-m
 ```
 
 Model memory estimates are conservative preflight safeguards rather than load guarantees. Unsafe
@@ -157,8 +174,6 @@ See [Upgrading and data preservation](upgrading.md#manual-upgrade-and-data-prese
 ```bash
 ./knemora start
 ./knemora start --with-presets
-./knemora start --yes-web-search
-./knemora start --with-presets --yes-web-search
 ./knemora stop
 ./knemora restart
 ./knemora status
@@ -190,26 +205,32 @@ graphs over the portable Wiki. See [optional external viewers](external-viewers.
 opening the Markdown files elsewhere.
 
 After software and model assets are installed, private Wiki, dataset, and local chat operation
-require no hosted service. Public web search is disabled by default. Starting with
-`--yes-web-search` enables the optional DDGS-backed integration for that runtime profile, but a
-chat turn must still explicitly request public web results before only that public query is sent to
-the external provider. Starting again without the flag restores the offline default.
+require no hosted service. Public web search starts OFF by default. In Direct, the browser control
+may temporarily turn it ON or OFF for that mounted chat session; each enabled turn sends only the
+restricted current-message query to the external provider. Wiki can never search the public web.
+Set `KNEMORA_WEB_SEARCH_ENABLED=true` to start Direct sessions ON. Ordinary `./knemora start`
+re-reads `.env`, and a backend restart causes mounted clients to discard stale overrides.
 
-## Optional ADK developer playground
+## Google ADK developer playground
 
 With the configured local model server running, developers may start the official Google ADK Web
-interface without changing the normal product runtime:
+interface in a separate terminal without changing the normal product runtime:
 
 ```bash
 ./knemora --dev adk-web
 ```
 
-It imports Knemora's existing `knowledge_agent` through `apps/api/.venv`, binds to `127.0.0.1`,
-and prints its actual URL. The launcher prefers a free, unreserved port 8080, otherwise scans
-through 8090; it reports an existing Knemora ADK Web URL on repeated launch and never stops another
-listener. Use its own chat for Events and Trace, because normal Knemora UI requests do not
-automatically enter this separate development server. Stop it with Ctrl+C. Do not expose it to an
-untrusted network; normal `./knemora start` never launches it.
+It imports Knemora's existing `knowledge_agent` through the locked `apps/api/.venv` and does not
+create another agent. It binds to `127.0.0.1`, prints its actual URL, and runs in the foreground.
+The launcher prefers a free, unreserved port 8080, otherwise scans through 8090; it reports an
+existing Knemora ADK Web URL on repeated launch and never stops or replaces another listener. Use
+its own chat for Events and Trace, because normal Knemora UI requests do not automatically enter
+this separate development server. It reads the same `.env` startup defaults as the application.
+Stop it with Ctrl+C. Do not expose this local, unauthenticated server to an untrusted network;
+normal `./knemora start` never launches it.
+
+The former `start-with-presets` and `delete-presets` spellings remain deprecated compatibility
+aliases. They print the corresponding canonical command and route through the same implementation.
 
 ## Manual fallback
 

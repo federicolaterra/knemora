@@ -255,11 +255,11 @@ onMounted(() => {
     ></div>
 
     <aside
-      class="sidebar sticky [top:0] [z-index:30] flex [flex:0_0_248px] flex-col [height:100vh] [padding:22px_16px_16px] text-ink bg-surface border-r border-line [transition:flex-basis_0.2s_ease,_transform_0.2s_ease] [&.collapsed]:[flex-basis:76px] [&.collapsed_.brand-row]:justify-center [&.collapsed_.brand-row]:w-full [&.collapsed_.brand]:justify-center [&.collapsed_.brand]:w-full mobile:fixed mobile:[left:0] mobile:[width:260px] mobile:-translate-x-[102%] mobile:[&.collapsed]:[flex-basis:260px] mobile:[&.collapsed_.nav-label]:[display:initial] mobile:[&.collapsed_.nav-item_span]:[display:initial] mobile:[&.collapsed_.runtime-card_div]:[display:initial] mobile:[&.collapsed_.brand-logo]:[display:initial] mobile:[&.collapsed_.brand-logo]:block mobile:[&.collapsed_.brand-icon]:hidden mobile:[&.collapsed_.brand-row]:justify-between mobile:[&.collapsed_.brand]:justify-start mobile:[&.collapsed_.brand]:[width:auto] mobile:[&.collapsed_.nav-item]:justify-start mobile:[&.collapsed_.nav-item]:[padding:0_11px] mobile:[&.collapsed_.runtime-card]:justify-start"
+      class="sidebar sticky [top:0] [z-index:30] flex [flex:0_0_248px] flex-col [height:100vh] [padding:10px_16px_16px] text-ink bg-surface border-r border-line [transition:flex-basis_0.2s_ease,_transform_0.2s_ease] [&.collapsed]:[flex-basis:76px] [&.collapsed_.brand-row]:justify-center [&.collapsed_.brand-row]:w-full [&.collapsed_.brand]:justify-center [&.collapsed_.brand]:w-full mobile:fixed mobile:[left:0] mobile:[width:260px] mobile:-translate-x-[102%] mobile:[&.collapsed]:[flex-basis:260px] mobile:[&.collapsed_.nav-label]:[display:initial] mobile:[&.collapsed_.nav-item_span]:[display:initial] mobile:[&.collapsed_.runtime-card_div]:[display:initial] mobile:[&.collapsed_.brand-logo]:[display:initial] mobile:[&.collapsed_.brand-logo]:block mobile:[&.collapsed_.brand-icon]:hidden mobile:[&.collapsed_.brand-row]:justify-between mobile:[&.collapsed_.brand]:justify-start mobile:[&.collapsed_.brand]:[width:auto] mobile:[&.collapsed_.nav-item]:justify-start mobile:[&.collapsed_.nav-item]:[padding:0_11px] mobile:[&.collapsed_.runtime-card]:justify-start"
       :class="{ collapsed, 'mobile:!translate-x-0': mobileOpen }"
     >
       <div
-        class="brand-row flex items-center justify-between relative [min-height:42px]"
+        class="brand-row flex items-center justify-between [min-height:42px]"
       >
         <RouterLink
           to="/"
@@ -279,7 +279,7 @@ onMounted(() => {
           />
         </RouterLink>
         <button
-          class="absolute [top:50%] [right:-30px] [z-index:2] grid place-items-center [width:28px] [height:28px] [color:#385047] bg-surface border border-line rounded-full [box-shadow:0_4px_12px_rgb(24_52_31_/_10%)] [transform:translateY(-50%)] hover:text-brand hover:border-brand mobile:hidden"
+          class="absolute right-[-14px] top-[46px] z-[2] grid h-7 w-7 place-items-center rounded-full border border-line bg-surface text-[#385047] [box-shadow:0_4px_12px_rgb(24_52_31_/_10%)] hover:!translate-y-0 mobile:hidden"
           type="button"
           :aria-label="collapsed ? 'Expand navigation' : 'Collapse navigation'"
           @click="collapsed = !collapsed"
@@ -409,7 +409,7 @@ onMounted(() => {
 
     <main class="min-w-0 flex-1">
       <header
-        class="topbar flex items-center justify-between [height:65px] [padding:0_34px] [background:rgb(255_255_255_/_82%)] border-b border-line [backdrop-filter:blur(12px)] mobile:[padding:0_16px_0_65px]"
+        class="topbar flex items-center justify-between [height:60px] [padding:0_34px] [background:rgb(255_255_255_/_82%)] border-b border-line [backdrop-filter:blur(12px)] mobile:[padding:0_16px_0_65px]"
       >
         <div>
           <span class="breadcrumb text-label text-muted">{{ system.name }}</span
@@ -424,7 +424,7 @@ onMounted(() => {
             <LogOut :size="16" />
           </button>
           <RouterLink
-            class="avatar grid place-items-center [width:31px] [height:31px] text-white [background:#d97855] rounded-full text-caption font-bold no-underline [transition:transform_0.16s_ease,_box-shadow_0.16s_ease] hover:[box-shadow:0_0_0_3px_rgb(221_124_83_/_18%)] hover:[transform:translateY(-1px)] [&.router-link-active]:[box-shadow:0_0_0_3px_rgb(221_124_83_/_18%)] [&.router-link-active]:[transform:translateY(-1px)]"
+            class="avatar grid place-items-center [width:31px] [height:31px] text-white [background:#F4A440] rounded-full text-caption font-bold no-underline [transition:transform_0.16s_ease,_box-shadow_0.16s_ease] hover:[box-shadow:0_0_0_3px_rgb(244_164_64_/_18%)] hover:[transform:translateY(-1px)] [&.router-link-active]:[box-shadow:0_0_0_3px_rgb(244_164_64_/_18%)] [&.router-link-active]:[transform:translateY(-1px)]"
             to="/profile"
             :aria-label="`Open profile for ${avatarName}`"
             title="Open profile"

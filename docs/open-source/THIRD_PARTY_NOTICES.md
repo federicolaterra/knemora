@@ -40,6 +40,11 @@ distributions must preserve license texts and notices required by those dependen
 - The default ISTA-DASLab Qwen3-8B GSQ Q3_K_M GGUF, and the optional Qwen3.8-27B GGUF, are
   downloaded separately from their upstream model repositories after setup is invoked and retain
   their upstream model licenses; neither artifact is part of this repository.
+- The optional `gemma-4-e4b-q4-k-m` catalog entry references Google DeepMind's Gemma 4 E4B
+  Instruct weights distributed as a GGUF by Unsloth. The pinned upstream repositories identify the
+  model as Apache-2.0. The weights are downloaded separately only after explicit setup, are not part
+  of this repository, and are not relicensed by Knemora's MIT license. Operators should review the
+  pinned Unsloth model card and Google's Gemma 4 license reference before use.
 - `jackwener/llm-wiki` is architectural reference material, not a runtime dependency; its code is
   not vendored here.
 

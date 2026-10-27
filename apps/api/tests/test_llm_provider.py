@@ -33,6 +33,7 @@ def test_local_provider_health_and_chat_contract() -> None:
                     {"message": {"role": "assistant", "content": "Hi"}, "finish_reason": "stop"}
                 ],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                "timings": {"prompt_ms": 12.5, "predicted_ms": 34.25},
             },
         )
 
@@ -50,10 +51,46 @@ def test_local_provider_health_and_chat_contract() -> None:
         assert health.healthy is True
         assert response.message.content == "Hi"
         assert response.usage.total_tokens == 2
+        assert response.performance.prefill_ms == 12.5
+        assert response.performance.decode_ms == 34.25
 
     import asyncio
 
     asyncio.run(exercise())
+
+
+def test_local_provider_applies_request_scoped_thinking_without_mutating_default() -> None:
+    observed: list[bool] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        observed.append(payload["chat_template_kwargs"]["enable_thinking"])
+        return httpx.Response(
+            200,
+            json={
+                "model": "configured-model",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+                ],
+            },
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = LocalLlamaCppProvider(
+                base_url="http://llama.test",
+                model="configured-model",
+                enable_thinking=False,
+                thinking_control="chat_template_enable_thinking",
+                client=client,
+            )
+            request = (ChatMessage(role="user", content="Hello"),)
+            await provider.chat(ChatRequest(messages=request))
+            await provider.chat(ChatRequest(messages=request, thinking=True))
+            await provider.chat(ChatRequest(messages=request, thinking=False))
+
+    asyncio.run(exercise())
+    assert observed == [False, True, False]
 
 
 @pytest.mark.parametrize(
@@ -110,7 +147,8 @@ async def test_local_provider_stream_contract() -> None:
         'data: {"model":"configured-model","choices":[{"delta":{"content":"Hello"},'
         '"finish_reason":null}]}\n\n'
         'data: {"model":"configured-model","choices":[{"delta":{"content":""},'
-        '"finish_reason":"stop"}]}\n\n'
+        '"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,'
+        '"total_tokens":3},"timings":{"prompt_ms":4.5,"predicted_ms":8.5}}\n\n'
         "data: [DONE]\n\n"
     )
 
@@ -130,6 +168,12 @@ async def test_local_provider_stream_contract() -> None:
 
     assert "".join(chunk.delta for chunk in chunks) == "Hello"
     assert any(chunk.done for chunk in chunks)
+    completed = next(chunk for chunk in chunks if chunk.finish_reason == "stop")
+    assert completed.usage is not None
+    assert completed.usage.total_tokens == 3
+    assert completed.performance is not None
+    assert completed.performance.prefill_ms == 4.5
+    assert completed.performance.decode_ms == 8.5
 
 
 def test_local_provider_sends_tools_and_parses_function_calls() -> None:

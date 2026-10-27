@@ -76,6 +76,22 @@ test.beforeEach(async ({ page }) => {
           },
         },
       });
+    if (path === "/api/v1/chat/capabilities")
+      return route.fulfill({
+        json: {
+          runtime_session_id: "runtime-default",
+          model_id: "fake-local",
+          model_name: "Fake Local",
+          model_revision: "test-revision",
+          thinking_default: "fast",
+          thinking_controllable: true,
+          supported_thinking_modes: ["fast", "deep"],
+          thinking_unavailable_reason: null,
+          web_search_default: false,
+          web_search_available: true,
+          web_search_unavailable_reason: null,
+        },
+      });
     if (path === "/api/v1/auth/me")
       return route.fulfill({
         json: {
@@ -92,6 +108,8 @@ test.beforeEach(async ({ page }) => {
             "chat.use",
             "document.read",
             "document.upload",
+            "document.reprocess",
+            "document.delete",
             "ingestion.read",
             "knowledge.read",
             "dataset.analyze",
@@ -114,6 +132,31 @@ test.beforeEach(async ({ page }) => {
               total_pages: 1,
             }
           : [documentRecord],
+      });
+    if (path === "/api/v1/source-deletion-operations")
+      return route.fulfill({ json: [] });
+    if (
+      path === "/api/v1/ingestion-jobs/job-1/reprocess" &&
+      route.request().method() === "POST"
+    )
+      return route.fulfill({ json: { status: "READY_FOR_COMPILATION" } });
+    if (
+      path === "/api/v1/document-versions/version-1/compile" &&
+      route.request().method() === "POST"
+    )
+      return route.fulfill({ json: { status: "COMPLETED" } });
+    if (
+      path === "/api/v1/documents/doc-1" &&
+      route.request().method() === "DELETE"
+    )
+      return route.fulfill({
+        json: {
+          id: "delete-1",
+          document_id: "doc-1",
+          status: "PENDING",
+          stage: "PENDING",
+          display_filename: "distribution.csv",
+        },
       });
     if (path === "/api/v1/wiki/pages") return route.fulfill({ json: [] });
     if (path === "/api/v1/wiki/page-index")
@@ -457,6 +500,10 @@ test("navigates the complete product workflow", async ({ page }, testInfo) => {
   await expect(page.locator(".orbit-dot")).toHaveCSS("width", "12px");
   await expect(page.locator(".orbit-dot")).toHaveCSS("height", "12px");
   await expect(page.locator(".orbit-dot")).toHaveCSS(
+    "background-color",
+    "rgb(244, 164, 64)",
+  );
+  await expect(page.locator(".orbit-dot")).toHaveCSS(
     "animation-name",
     "knowledge-orbit",
   );
@@ -530,6 +577,28 @@ test("navigates the complete product workflow", async ({ page }, testInfo) => {
     path: testInfo.outputPath("documents.png"),
     animations: "disabled",
   });
+  await page.getByTitle("Reprocess source").click();
+  const reprocessDialog = page.getByRole("dialog", {
+    name: "Reprocess source?",
+  });
+  await expect(reprocessDialog).toBeVisible();
+  await expect(reprocessDialog.locator("span").first()).toHaveCSS(
+    "color",
+    "rgb(244, 164, 64)",
+  );
+  await reprocessDialog
+    .getByRole("button", { name: "Reprocess", exact: true })
+    .click();
+  await expect(reprocessDialog).toBeHidden();
+  await page.getByTitle("Delete source and update knowledge").click();
+  const deleteSourceDialog = page.getByRole("dialog", {
+    name: "Delete source?",
+  });
+  await expect(deleteSourceDialog).toBeVisible();
+  await deleteSourceDialog
+    .getByRole("button", { name: "Confirm", exact: true })
+    .click();
+  await expect(deleteSourceDialog).toBeHidden();
   const documentSearch = page.getByPlaceholder("Search files…");
   await documentSearch.focus();
   await expect(documentSearch).toHaveCSS(
@@ -803,6 +872,7 @@ test("navigates the complete product workflow", async ({ page }, testInfo) => {
   await expect(
     page.getByRole("textbox", { name: "Message", exact: true }),
   ).toHaveCSS("font-size", "15px");
+  await expect(page.locator(".os-scrollbar-vertical").first()).toBeAttached();
   await expect(
     page.getByText("What would you like to understand?"),
   ).toBeVisible();
@@ -827,10 +897,19 @@ test("navigates the complete product workflow", async ({ page }, testInfo) => {
     page.getByRole("dialog", { name: "Delete conversation?" }),
   ).toBeHidden();
   await page.getByRole("link", { name: "View all", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Back to AI Chat" })).toHaveCSS(
+    "font-size",
+    "14px",
+  );
   await expect(page.getByText("1 conversations · 15 per page")).toHaveCSS(
     "font-size",
     "12px",
   );
+  await page.getByTitle("Rename conversation").click();
+  await expect(
+    page.getByRole("textbox", { name: "Conversation title", exact: true }),
+  ).toHaveAttribute("maxlength", "74");
+  await expect(page.getByText("15/74", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Analytics", exact: true }).click();
   await expect(
     page.getByText(
@@ -981,7 +1060,15 @@ test("preserves mobile and intermediate navigation", async ({
 test("keeps Wiki and Direct modes accessible and clear of the composer", async ({
   page,
 }) => {
-  const submittedBodies: Array<{ content: string; response_mode: string }> = [];
+  const submittedBodies: Array<{
+    content: string;
+    response_mode: string;
+    thinking_mode: string;
+    web_search: boolean;
+  }> = [];
+  let runtimeSessionId = "runtime-a";
+  let runtimeWebDefault = false;
+  let runtimeThinkingDefault = "fast";
   let notifyStreamStarted: (() => void) | undefined;
   let releaseStream: (() => void) | undefined;
   const streamStarted = new Promise<void>((resolve) => {
@@ -990,6 +1077,24 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
   const streamGate = new Promise<void>((resolve) => {
     releaseStream = resolve;
   });
+
+  await page.route("http://localhost:8000/api/v1/chat/capabilities", (route) =>
+    route.fulfill({
+      json: {
+        runtime_session_id: runtimeSessionId,
+        model_id: "fake-local",
+        model_name: "Fake Local",
+        model_revision: "test-revision",
+        thinking_default: runtimeThinkingDefault,
+        thinking_controllable: true,
+        supported_thinking_modes: ["fast", "deep"],
+        thinking_unavailable_reason: null,
+        web_search_default: runtimeWebDefault,
+        web_search_available: true,
+        web_search_unavailable_reason: null,
+      },
+    }),
+  );
 
   await page.route("http://localhost:8000/api/v1/**", async (route) => {
     const request = route.request();
@@ -1020,7 +1125,41 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
       path === "/api/v1/conversations/conversation-mode/messages" &&
       request.method() === "GET"
     )
-      return route.fulfill({ json: [] });
+      return route.fulfill({
+        json: submittedBodies.length
+          ? [
+              {
+                id: "user-mode",
+                sequence: 1,
+                role: "user",
+                content: submittedBodies[0].content,
+                model: null,
+                created_at: "2026-10-26T15:00:00Z",
+                execution: null,
+              },
+              {
+                id: "assistant-mode",
+                sequence: 2,
+                role: "assistant",
+                content: "Direct response.",
+                model: "fake-local",
+                created_at: "2026-10-26T15:00:01Z",
+                execution: {
+                  response_mode: "direct",
+                  model_id: "fake-local",
+                  model_name: "Fake Local",
+                  model_revision: "test-revision",
+                  thinking_mode: "deep",
+                  thinking_control: "chat_template_enable_thinking",
+                  web_requested: true,
+                  web_attempted: true,
+                  web_succeeded: true,
+                  web_outcome: "success",
+                },
+              },
+            ]
+          : [],
+      });
     if (
       path === "/api/v1/conversations/conversation-1" &&
       request.method() === "GET"
@@ -1043,7 +1182,12 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
       request.method() === "POST"
     ) {
       submittedBodies.push(
-        request.postDataJSON() as { content: string; response_mode: string },
+        request.postDataJSON() as {
+          content: string;
+          response_mode: string;
+          thinking_mode: string;
+          web_search: boolean;
+        },
       );
       notifyStreamStarted?.();
       await streamGate;
@@ -1053,7 +1197,7 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
         body:
           'event: message.started\ndata: {"event_id":"mode"}\n\n' +
           'event: message.delta\ndata: {"event_id":"mode","delta":"Direct response."}\n\n' +
-          'event: message.completed\ndata: {"event_id":"mode"}\n\n',
+          'event: message.completed\ndata: {"event_id":"mode","execution":{"model_name":"Fake Local","thinking_mode":"deep","web_outcome":"success"}}\n\n',
       });
     }
     return route.fallback();
@@ -1064,23 +1208,32 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
   const modeGroup = page.getByRole("group", { name: "Response mode" });
   const wiki = page.getByRole("radio", { name: "Wiki" });
   const direct = page.getByRole("radio", { name: "Direct" });
+  const fast = page.getByRole("radio", { name: "fast" });
+  const deep = page.getByRole("radio", { name: "deep" });
+  const web = page.getByRole("checkbox");
   const wikiOption = page.locator('label:has(input[value="wiki"]) span');
   const directOption = page.locator('label:has(input[value="direct"]) span');
+  const webControl = page.locator('label:has(input[type="checkbox"])');
+  const webOption = webControl.locator("span");
   const responseDisclaimer = page.getByText(
     "AI responses may include mistakes.",
-  );
-  const wikiHelp = page.getByText("Wiki: answers grounded in your knowledge");
-  const directHelp = page.getByText(
-    "Direct: local AI without knowledge search",
   );
   const composer = page.locator("form.composer");
   const message = page.getByRole("textbox", { name: "Message" });
   await expect(wiki).toBeChecked();
-  await expect(wikiHelp).toBeVisible();
-  await expect(wikiHelp).toHaveCSS("font-size", "11px");
+  await expect(
+    page.getByText("Wiki: answers grounded in your knowledge"),
+  ).toHaveCount(0);
   await expect(wikiOption).toHaveCSS("background-color", "rgb(51, 209, 51)");
-  await expect(wikiOption).toHaveCSS("font-size", "11px");
-  await expect(directOption).toHaveCSS("font-size", "11px");
+  await expect(wikiOption).toHaveCSS("font-size", "10px");
+  await expect(directOption).toHaveCSS("font-size", "10px");
+  await expect(webOption).toHaveCSS("font-size", "10px");
+  await expect(webControl).toHaveAttribute(
+    "title",
+    "Web unavailable in Wiki to keep private knowledge local",
+  );
+  await expect(fast).toBeChecked();
+  await expect(web).toBeDisabled();
   await expect(responseDisclaimer).toHaveCSS("font-size", "11px");
   const composerBox = await composer.boundingBox();
   const disclaimerBox = await responseDisclaimer.boundingBox();
@@ -1093,9 +1246,29 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
   await wiki.focus();
   await wiki.press("ArrowRight");
   await expect(direct).toBeChecked();
-  await expect(directHelp).toBeVisible();
-  await expect(directHelp).toHaveCSS("font-size", "11px");
+  await expect(
+    page.getByText("Direct: local AI without knowledge search"),
+  ).toHaveCount(0);
   await expect(directOption).toHaveCSS("background-color", "rgb(51, 209, 51)");
+  const modeControlBox = await modeGroup.boundingBox();
+  const webControlBox = await webControl.boundingBox();
+  expect(modeControlBox).not.toBeNull();
+  expect(webControlBox).not.toBeNull();
+  expect(webControlBox!.height).toBe(modeControlBox!.height);
+  await page
+    .locator('label:has(input[name="thinking-mode"][value="deep"])')
+    .click();
+  await expect(deep).toBeChecked();
+  await page.locator('label:has(input[type="checkbox"])').click();
+  await expect(web).toBeChecked();
+  await expect(webOption).toHaveCSS("background-color", "rgb(51, 209, 51)");
+  await expect(webOption).toHaveCSS("color", "rgb(255, 255, 255)");
+  await expect(wiki).toBeEnabled();
+  await wikiOption.click();
+  await expect(web).toBeDisabled();
+  await expect(web).not.toBeChecked();
+  await directOption.click();
+  await expect(web).toBeChecked();
 
   await message.fill(
     Array.from(
@@ -1115,10 +1288,12 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
   await streamStarted;
   await expect(wiki).toBeDisabled();
   await expect(direct).toBeDisabled();
-  await expect(page.getByText("Generating answer…")).toBeVisible();
+  await expect(page.getByText("Searching public web…")).toBeVisible();
   await expect(page.getByText("Searching company knowledge…")).toHaveCount(0);
   expect(submittedBodies).toHaveLength(1);
   expect(submittedBodies[0].response_mode).toBe("direct");
+  expect(submittedBodies[0].thinking_mode).toBe("deep");
+  expect(submittedBodies[0].web_search).toBe(true);
 
   await page.setViewportSize({ width: 375, height: 812 });
   const mobileTextareaBox = await message.boundingBox();
@@ -1131,15 +1306,297 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
 
   releaseStream?.();
   await expect(page.getByText("Direct response.")).toBeVisible();
+  await expect(
+    page.getByText("Fake Local · Direct · Deep · Web ON"),
+  ).toBeVisible();
+  const chatAvatars = page.locator(".chat-avatar");
+  await expect(chatAvatars).toHaveCount(2);
+  await expect(chatAvatars.nth(0)).toHaveCSS("font-size", "10px");
+  await expect(chatAvatars.nth(1)).toHaveCSS("font-size", "10px");
+  await expect(page.getByRole("checkbox", { name: "Web ON" })).toBeChecked();
   await page.setViewportSize({ width: 1280, height: 900 });
+
+  await message.fill("Use the same temporary Web preference again.");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect.poll(() => submittedBodies.length).toBe(2);
+  expect(submittedBodies[1].thinking_mode).toBe("deep");
+  expect(submittedBodies[1].web_search).toBe(true);
+  await expect(page.getByRole("checkbox", { name: "Web ON" })).toBeChecked();
+
   await page.getByRole("button", { name: "New conversation" }).click();
   await expect(wiki).toBeChecked();
 
   await directOption.click();
+  await expect(web).toBeChecked();
   await page.getByRole("link", { name: /Research thread/ }).click();
   await expect(wiki).toBeChecked();
 
   await directOption.click();
+  await expect(web).toBeChecked();
   await page.reload();
   await expect(wiki).toBeChecked();
+  await directOption.click();
+  await expect(web).not.toBeChecked();
+  await expect(fast).toBeChecked();
+
+  await page.getByRole("button", { name: "New conversation" }).click();
+  await directOption.click();
+  runtimeSessionId = "runtime-b";
+  runtimeWebDefault = true;
+  runtimeThinkingDefault = "deep";
+  await message.fill("Use the restarted runtime defaults.");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect.poll(() => submittedBodies.length).toBe(3);
+  expect(submittedBodies[2].thinking_mode).toBe("deep");
+  expect(submittedBodies[2].web_search).toBe(true);
+  await expect(page.getByRole("checkbox", { name: "Web ON" })).toBeChecked();
+
+  await message.fill("Keep using the ON startup default.");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect.poll(() => submittedBodies.length).toBe(4);
+  expect(submittedBodies[3].web_search).toBe(true);
+
+  await page.locator('label:has(input[type="checkbox"])').click();
+  await expect(web).not.toBeChecked();
+  await message.fill("Keep this turn local after the override.");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect.poll(() => submittedBodies.length).toBe(5);
+  expect(submittedBodies[4].thinking_mode).toBe("deep");
+  expect(submittedBodies[4].web_search).toBe(false);
+});
+
+for (const model of [
+  {
+    id: "qwen3-8b-q3-k-m",
+    name: "Qwen3 8B GSQ Q3_K_M",
+    defaultMode: "fast",
+  },
+  {
+    id: "gemma-4-e4b-q4-k-m",
+    name: "Gemma 4 E4B Instruct (Q4_K_M)",
+    defaultMode: "deep",
+  },
+] as const) {
+  test(`allows Deep clicks in Wiki and Direct for ${model.id}`, async ({
+    page,
+  }) => {
+    const submittedBodies: Array<{
+      content: string;
+      response_mode: "wiki" | "direct";
+      thinking_mode: "fast" | "deep";
+      web_search: boolean;
+    }> = [];
+    let persistedMessages: unknown[] = [];
+
+    await page.route(
+      "http://localhost:8000/api/v1/chat/capabilities",
+      (route) =>
+        route.fulfill({
+          json: {
+            runtime_session_id: `runtime-${model.id}`,
+            model_id: model.id,
+            model_name: model.name,
+            model_revision: "verified-revision",
+            thinking_default: model.defaultMode,
+            thinking_controllable: true,
+            supported_thinking_modes: ["fast", "deep"],
+            thinking_unavailable_reason: null,
+            web_search_default: false,
+            web_search_available: true,
+            web_search_unavailable_reason: null,
+          },
+        }),
+    );
+    await page.route("http://localhost:8000/api/v1/**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/v1/chat/capabilities") return route.fallback();
+      if (path === "/api/v1/conversations" && request.method() === "POST")
+        return route.fulfill({
+          status: 201,
+          json: {
+            id: `conversation-${model.id}`,
+            user_id: "user-1",
+            title: "Untitled conversation",
+            message_count: 0,
+          },
+        });
+      if (
+        path === `/api/v1/conversations/conversation-${model.id}` &&
+        request.method() === "GET"
+      )
+        return route.fulfill({
+          json: {
+            id: `conversation-${model.id}`,
+            user_id: "user-1",
+            title: `${model.name} controls`,
+            message_count: persistedMessages.length,
+          },
+        });
+      if (
+        path === `/api/v1/conversations/conversation-${model.id}/messages` &&
+        request.method() === "GET"
+      )
+        return route.fulfill({ json: persistedMessages });
+      if (
+        path ===
+          `/api/v1/conversations/conversation-${model.id}/messages/stream` &&
+        request.method() === "POST"
+      ) {
+        const body = request.postDataJSON() as (typeof submittedBodies)[number];
+        submittedBodies.push(body);
+        const execution = {
+          response_mode: body.response_mode,
+          model_id: model.id,
+          model_name: model.name,
+          model_revision: "verified-revision",
+          thinking_mode: body.thinking_mode,
+          thinking_control: "chat_template_enable_thinking",
+          web_requested: false,
+          web_attempted: false,
+          web_succeeded: false,
+          web_outcome: "off",
+        };
+        persistedMessages = [
+          {
+            id: `user-${submittedBodies.length}`,
+            sequence: 1,
+            role: "user",
+            content: body.content,
+            model: null,
+            created_at: "2026-10-26T18:00:00Z",
+            execution: null,
+          },
+          {
+            id: `assistant-${submittedBodies.length}`,
+            sequence: 2,
+            role: "assistant",
+            content: "Verified control response.",
+            model: model.id,
+            created_at: "2026-10-26T18:00:01Z",
+            execution,
+          },
+        ];
+        return route.fulfill({
+          status: 200,
+          contentType: "text/event-stream",
+          body:
+            'event: message.started\ndata: {"event_id":"verified"}\n\n' +
+            'event: message.delta\ndata: {"event_id":"verified","delta":"Verified control response."}\n\n' +
+            `event: message.completed\ndata: ${JSON.stringify({ event_id: "verified", execution })}\n\n`,
+        });
+      }
+      return route.fallback();
+    });
+
+    await page.goto("/chat");
+    const wiki = page.getByRole("radio", { name: "Wiki" });
+    const fast = page.getByRole("radio", { name: "fast" });
+    const deep = page.getByRole("radio", { name: "deep" });
+    const fastControl = page.locator(
+      'label:has(input[name="thinking-mode"][value="fast"])',
+    );
+    const deepControl = page.locator(
+      'label:has(input[name="thinking-mode"][value="deep"])',
+    );
+    const directControl = page.locator(
+      'label:has(input[name="response-mode"][value="direct"])',
+    );
+    const message = page.getByRole("textbox", { name: "Message" });
+    await expect(wiki).toBeChecked();
+    await expect(model.defaultMode === "deep" ? deep : fast).toBeChecked();
+
+    await fastControl.click();
+    await deepControl.click();
+    await expect(deep).toBeChecked();
+    await message.fill("Wiki Deep turn");
+    await page.getByRole("button", { name: "Send message" }).click();
+    await expect.poll(() => submittedBodies.length).toBe(1);
+    expect(submittedBodies[0]).toMatchObject({
+      response_mode: "wiki",
+      thinking_mode: "deep",
+    });
+    await expect(
+      page.getByText(`${model.name} · Wiki · Deep · Web OFF`),
+    ).toBeVisible();
+
+    await directControl.click();
+    await fastControl.click();
+    await deepControl.click();
+    await expect(deep).toBeChecked();
+    await message.fill("Direct Deep turn");
+    await page.getByRole("button", { name: "Send message" }).click();
+    await expect.poll(() => submittedBodies.length).toBe(2);
+    expect(submittedBodies[1]).toMatchObject({
+      response_mode: "direct",
+      thinking_mode: "deep",
+    });
+    await expect(
+      page.getByText(`${model.name} · Direct · Deep · Web OFF`),
+    ).toBeVisible();
+  });
+}
+
+test("fails closed when chat capabilities are unavailable", async ({
+  page,
+}) => {
+  await page.route("http://localhost:8000/api/v1/chat/capabilities", (route) =>
+    route.fulfill({ status: 503, json: { detail: "Unavailable" } }),
+  );
+
+  await page.goto("/chat");
+  await expect(page.getByRole("radio", { name: "fast" })).toBeDisabled();
+  await expect(page.getByRole("radio", { name: "deep" })).toBeDisabled();
+  await page.getByRole("textbox", { name: "Message" }).fill("Do not submit");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(
+    page.getByText(
+      "Unable to verify the current chat runtime settings. Try again.",
+    ),
+  ).toBeVisible();
+});
+
+test("disables unsupported thinking and keeps Web Direct-only", async ({
+  page,
+}) => {
+  await page.route("http://localhost:8000/api/v1/chat/capabilities", (route) =>
+    route.fulfill({
+      json: {
+        runtime_session_id: "runtime-custom",
+        model_id: "custom-local",
+        model_name: "Custom Local",
+        model_revision: null,
+        thinking_default: "fast",
+        thinking_controllable: false,
+        supported_thinking_modes: [],
+        thinking_unavailable_reason:
+          "The selected model's request-level thinking control is unverified.",
+        web_search_default: false,
+        web_search_available: true,
+        web_search_unavailable_reason: null,
+      },
+    }),
+  );
+
+  await page.goto("/chat");
+  const fast = page.getByRole("radio", { name: "fast" });
+  const deep = page.getByRole("radio", { name: "deep" });
+  const web = page.getByRole("checkbox");
+  await expect(fast).toBeDisabled();
+  await expect(deep).toBeDisabled();
+  await expect(fast).not.toBeChecked();
+  await expect(deep).not.toBeChecked();
+  await expect(web).toBeDisabled();
+
+  await page.locator('label:has(input[value="direct"])').click();
+  await expect(web).toBeEnabled();
+  await expect(
+    page.locator('label:has(input[name="thinking-mode"][value="deep"])'),
+  ).toHaveAttribute(
+    "title",
+    "The selected model's request-level thinking control is unverified.",
+  );
+  await expect(
+    page.locator('label:has(input[type="checkbox"])'),
+  ).toHaveAttribute("title", "Web OFF · local model only");
 });

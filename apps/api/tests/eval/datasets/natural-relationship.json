@@ -1,0 +1,15 @@
+{
+  "eval_cases": [
+    {
+      "eval_case_id": "natural_language_relationship",
+      "prompt": {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Che relazione c'è tra Elena Ferri e Marco Ferri?"
+          }
+        ]
+      }
+    }
+  ]
+}

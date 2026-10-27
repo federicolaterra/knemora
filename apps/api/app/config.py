@@ -98,12 +98,17 @@ class Settings(BaseSettings):
 
     llm_base_url: str = _setting("http://localhost:8080", "LLM_BASE_URL")
     llm_model: str = _setting("qwen3-8b-q3-k-m", "LLM_MODEL")
+    llm_display_name: str = _setting("Qwen3 8B GSQ Q3_K_M", "LLM_DISPLAY_NAME")
+    llm_revision: str | None = _setting(None, "LLM_REVISION")
     llm_quantization: str = _setting("Q3_K_M (GSQ-refined K-Quant)", "LLM_QUANTIZATION")
     llm_api_key: SecretStr | None = _setting(None, "LLM_API_KEY")
     llm_timeout_seconds: float = _setting(180.0, "LLM_TIMEOUT_SECONDS", gt=0)
     llm_context_tokens: int = _setting(8192, "LLM_CONTEXT_TOKENS", ge=512)
     llm_max_output_tokens: int = _setting(1024, "LLM_MAX_OUTPUT_TOKENS", ge=1)
     llm_enable_thinking: bool = _setting(False, "LLM_ENABLE_THINKING")
+    llm_thinking_control: Literal["chat_template_enable_thinking", "fixed_off", "unverified"] = (
+        _setting("unverified", "LLM_THINKING_CONTROL")
+    )
     max_user_message_chars: int = _setting(20_000, "MAX_USER_MESSAGE_CHARS", ge=1)
     source_store_path: Path = _setting(Path("data/sources"), "SOURCE_STORE_PATH")
     knowledge_path: Path = _setting(Path("knowledge"), "KNOWLEDGE_PATH")

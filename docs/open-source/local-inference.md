@@ -14,10 +14,46 @@ sooner and is not an equivalent-quality mode. Explicit per-model or environment 
 silently lowered. The former 27B model remains selectable as `qwen3.8-27b-iq2-s`; it is no longer the
 default.
 
+The optional `gemma-4-e4b-q4-k-m` entry pins Unsloth's
+`gemma-4-E4B-it-Q4_K_M.gguf` at immutable revision
+`bfc15c382204943c3a8fff0c750b94ae2364d7a3`, size 4,977,171,584 bytes, and SHA-256
+`85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87`. The local artifact hash
+was independently verified, and managed llama.cpp b11146 passed load, non-thinking Jinja chat,
+strict JSON-schema, and OpenAI-compatible tool-call smokes at 8,192 tokens. Real thinking-off
+acceptance also passes Direct and grounded Wiki behavior plus strict version-1 knowledge compilation
+for equivalent TXT, PDF, and DOCX fixtures, including provenance, retrieval, atomic invalid-output
+failure, and reprocess idempotency. The exact artifact is Knemora-tested: a disposable synthetic
+home passed managed Qwen → Gemma → Qwen selection and startup, API/UI/inference readiness, grounded
+continuity, byte/hash preservation, and a naturally rejected unsafe-start rollback without a memory
+safeguard bypass. Live Gemma passed at the supported 4,096-token context on the 16 GiB acceptance
+host; the earlier compilation matrix passed at 8,192 tokens. The label is scoped to this pinned
+artifact and managed llama.cpp b11146. Catalog listing never downloads or selects it, and Qwen
+remains the default.
+
 Both Wiki and Direct chat modes use this same active model and provider path. Direct is not a
-second client or model: it is an ADK invocation with retrieval tools withheld. It therefore makes
-no Wiki, document, dataset, graph, source, or public-search calls, but it does not imply a universal
-latency improvement.
+second client or model: it is an ADK invocation with private retrieval tools withheld. Its optional
+public search is a separate pre-model application step, not an ADK tool. Direct does not imply a
+universal latency improvement.
+
+Chat thinking control is request-scoped and provider-neutral. Curated Qwen templates declare
+`chat_template_enable_thinking` and the adapter sends the frozen value as
+`chat_template_kwargs.enable_thinking` on every request in the turn. The exact curated Gemma 4 E4B
+GGUF template also branches on that boolean and is registered with the same verified capability,
+matching Google's [Gemma 4 thinking guidance](https://ai.google.dev/gemma/docs/capabilities/thinking)
+and llama.cpp's documented
+[`chat_template_kwargs`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
+Custom models remain unverified unless a future capability record says otherwise. Fast is the
+missing-setting default. Unsupported or unverified explicit modes fail clearly; controls do
+not restart llama.cpp, reload the GGUF, enlarge context, expose hidden reasoning, or alter the
+separately configured version-1 knowledge compiler. Managed llama.cpp b11146 was inspected and its
+installed build reports `0.5.0-dev` at commit `7fe450e19`. The template and request path were
+verified read-only; matched real Fast/Deep generation remains a separate manual acceptance step.
+
+Content-free telemetry separates provider duration, llama.cpp prefill/decode timings, time to first
+streamed token/visible delta, history preparation, ADK session setup and replay, persistence, model,
+effective context, history length, stream mode, tool count, token usage, and finish reason. Browser
+console telemetry records end-to-end stream, first-delta, and render-settle timing without prompts
+or responses. Direct also skips constructing retrieval tools for the invocation.
 
 Resolution precedence is a validated absolute `LLAMA_SERVER_BIN` operator override, the verified
 active managed installation, then a validated explicitly configured legacy `LLAMA_CPP_DIR` source

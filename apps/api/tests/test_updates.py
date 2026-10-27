@@ -226,9 +226,6 @@ def test_full_flow_activates_pinned_checkout_and_preserves_isolated_home(
         def current_mode(self) -> str:
             return "normal"
 
-        def current_web_search_enabled(self) -> bool:
-            return False
-
         def stop(self) -> None:
             lifecycle.append("stop")
 

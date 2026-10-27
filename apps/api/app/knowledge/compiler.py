@@ -1860,8 +1860,8 @@ class KnowledgeCompiler:
                         (
                             claim
                             for claim in claims
-                            if normalize_name(claim.key) == normalize_name(claim_proposal.key)
-                            and normalize_name(claim.text) == normalize_name(claim_proposal.text)
+                            if normalize_name(claim.text) == normalize_name(claim_proposal.text)
+                            and claim.classification == claim_proposal.classification
                         ),
                         None,
                     )

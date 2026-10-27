@@ -10,6 +10,7 @@ import {
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 
 import { api, openOriginalSource } from "../api/client";
+import ConfirmActionModal from "../components/ConfirmActionModal.vue";
 import PaginationControls from "../components/PaginationControls.vue";
 import PageHeader from "../components/PageHeader.vue";
 import StatusBadge from "../components/StatusBadge.vue";
@@ -32,6 +33,10 @@ const total = ref(0);
 const totalPages = ref(1);
 const loading = ref(true);
 const deletions = ref<SourceDeletionOperation[]>([]);
+const pendingAction = ref<{
+  kind: "delete" | "reprocess";
+  document: DocumentRecord;
+} | null>(null);
 const deletionDismissalKey = "knemora.documents.dismissed-deletions";
 const dismissedDeletionIds = ref(loadDismissedDeletionIds());
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -125,7 +130,18 @@ async function refreshDocuments() {
   await loadPage(1);
 }
 
-async function reprocess(document: (typeof workspace.documents)[number]) {
+function requestSourceAction(
+  kind: "delete" | "reprocess",
+  document: DocumentRecord,
+) {
+  pendingAction.value = { kind, document };
+}
+
+function closeActionModal() {
+  if (!busy.value) pendingAction.value = null;
+}
+
+async function reprocess(document: DocumentRecord) {
   busy.value = document.document_version_id;
   error.value = "";
   try {
@@ -133,6 +149,7 @@ async function reprocess(document: (typeof workspace.documents)[number]) {
     await api.compileDocument(document.document_version_id);
     await workspace.refresh();
     await loadPage();
+    pendingAction.value = null;
   } catch (reason) {
     error.value =
       reason instanceof Error ? reason.message : "Reprocessing failed.";
@@ -141,14 +158,9 @@ async function reprocess(document: (typeof workspace.documents)[number]) {
   }
 }
 
-async function deleteSource(document: (typeof workspace.documents)[number]) {
-  if (
-    !window.confirm(
-      `Delete ${document.original_filename} and every version? Stored source files will be removed and active Wiki, search, graph, and dataset knowledge will be updated. Historical backups and conversations are not changed.`,
-    )
-  )
-    return;
+async function deleteSource(document: DocumentRecord) {
   busy.value = document.document_version_id;
+  error.value = "";
   try {
     await api.deleteDocument(document.document_id);
     await loadDeletions();
@@ -156,6 +168,7 @@ async function deleteSource(document: (typeof workspace.documents)[number]) {
     await loadPage(
       documents.value.length === 1 ? Math.max(1, page.value - 1) : page.value,
     );
+    pendingAction.value = null;
   } catch (reason) {
     error.value =
       reason instanceof Error
@@ -164,6 +177,13 @@ async function deleteSource(document: (typeof workspace.documents)[number]) {
   } finally {
     busy.value = "";
   }
+}
+
+async function confirmSourceAction() {
+  const action = pendingAction.value;
+  if (!action || busy.value) return;
+  if (action.kind === "delete") await deleteSource(action.document);
+  else await reprocess(action.document);
 }
 
 async function retryDeletion(operation: SourceDeletionOperation) {
@@ -371,7 +391,7 @@ async function retryDeletion(operation: SourceDeletionOperation) {
                   class="hover:text-[#3f4c48] hover:bg-[#edf2ef]"
                   title="Reprocess source"
                   :disabled="busy === document.document_version_id"
-                  @click="reprocess(document)"
+                  @click="requestSourceAction('reprocess', document)"
                 >
                   <RefreshCw
                     :class="{
@@ -387,7 +407,7 @@ async function retryDeletion(operation: SourceDeletionOperation) {
                   class="hover:text-danger hover:bg-[#fbece6] focus-visible:!outline-danger"
                   title="Delete source and update knowledge"
                   :disabled="busy === document.document_version_id"
-                  @click="deleteSource(document)"
+                  @click="requestSourceAction('delete', document)"
                 >
                   <Trash2 :size="17" />
                 </button>
@@ -405,5 +425,34 @@ async function retryDeletion(operation: SourceDeletionOperation) {
         @change="loadPage"
       />
     </section>
+    <ConfirmActionModal
+      v-if="pendingAction"
+      :title="
+        pendingAction.kind === 'delete' ? 'Delete source?' : 'Reprocess source?'
+      "
+      :description="
+        pendingAction.kind === 'delete'
+          ? `Are you sure you want to confirm this action? “${pendingAction.document.original_filename}” and every version will be deleted. Stored source files will be removed and active Wiki, search, graph, and dataset knowledge will be updated. Historical backups and conversations will not change.`
+          : `Are you sure you want to reprocess “${pendingAction.document.original_filename}”? Knemora will parse the immutable source again and rebuild its compiled knowledge.`
+      "
+      :confirm-label="pendingAction.kind === 'delete' ? 'Confirm' : 'Reprocess'"
+      :busy-label="
+        pendingAction.kind === 'delete' ? 'Deleting…' : 'Reprocessing…'
+      "
+      :close-label="
+        pendingAction.kind === 'delete'
+          ? 'Close deletion confirmation'
+          : 'Close reprocess confirmation'
+      "
+      :tone="pendingAction.kind === 'delete' ? 'danger' : 'warning'"
+      :busy="Boolean(busy)"
+      @close="closeActionModal"
+      @confirm="confirmSourceAction"
+    >
+      <template #confirm-icon>
+        <Trash2 v-if="pendingAction.kind === 'delete'" :size="16" />
+        <RefreshCw v-else :size="16" />
+      </template>
+    </ConfirmActionModal>
   </section>
 </template>

@@ -54,6 +54,7 @@ class ChatRequest(BaseModel):
     response_schema: dict[str, Any] | None = None
     tools: tuple[ChatToolDefinition, ...] = ()
     tool_choice: str | dict[str, Any] | None = None
+    thinking: bool | None = None
 
 
 class ChatUsage(BaseModel):
@@ -66,6 +67,15 @@ class ChatUsage(BaseModel):
     total_tokens: int | None = None
 
 
+class ChatPerformance(BaseModel):
+    """Provider-neutral prompt/decode timings when supplied by the runtime."""
+
+    model_config = ConfigDict(frozen=True)
+
+    prefill_ms: float | None = Field(default=None, ge=0)
+    decode_ms: float | None = Field(default=None, ge=0)
+
+
 class ChatResponse(BaseModel):
     """Complete visible model response."""
 
@@ -75,6 +85,7 @@ class ChatResponse(BaseModel):
     model: str
     finish_reason: str | None = None
     usage: ChatUsage = Field(default_factory=ChatUsage)
+    performance: ChatPerformance = Field(default_factory=ChatPerformance)
 
 
 class ChatChunk(BaseModel):
@@ -87,6 +98,7 @@ class ChatChunk(BaseModel):
     model: str
     finish_reason: str | None = None
     usage: ChatUsage | None = None
+    performance: ChatPerformance | None = None
 
 
 class LLMCapabilities(BaseModel):
@@ -98,6 +110,9 @@ class LLMCapabilities(BaseModel):
     structured_output: bool
     cancellation: bool
     max_context_tokens: int | None = None
+    thinking_control: Literal["chat_template_enable_thinking", "fixed_off", "unverified"] = (
+        "unverified"
+    )
 
 
 class LLMHealth(BaseModel):

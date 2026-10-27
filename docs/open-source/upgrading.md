@@ -15,6 +15,11 @@ an update with:
 ./knemora --non-interactive --yes update
 ```
 
+An installation created before the managed updater was introduced needs one manual update followed
+by `./knemora setup`. Later updates can be checked and explicitly installed from the CLI or the
+administrator sidebar card. Checks report both the application version/tag and commit SHA; a
+matching version does not conceal a newer official commit.
+
 The check exits `0` when the checkout is verified current, `10` when an update is available, and `2`
 when the check is unavailable or installation is blocked. Automatic installation is limited to a
 clean native macOS Apple Silicon `master` checkout that is strictly behind the official branch and

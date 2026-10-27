@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from fastapi import Depends, FastAPI, Query, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -21,7 +21,7 @@ from fastapi.responses import (
     RedirectResponse,
     StreamingResponse,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -68,7 +68,15 @@ from app.security import (
     SecurityHeadersMiddleware,
     require_permission,
 )
-from app.services.chat import ChatService, ResponseMode
+from app.services.chat import (
+    ChatExecutionMetadata,
+    ChatService,
+    ResponseMode,
+    RuntimeControlError,
+    ThinkingMode,
+    default_thinking_mode,
+    supported_thinking_modes,
+)
 from app.updates import create_update_router
 from knemora_bootstrap.configuration import AppPaths, configured_data_path
 from knemora_bootstrap.update import UpdateService
@@ -112,6 +120,22 @@ class CapabilitiesResponse(BaseModel):
     capabilities: tuple[str, ...]
 
 
+class ChatCapabilitiesResponse(BaseModel):
+    """Non-sensitive runtime defaults and model capability resolution."""
+
+    runtime_session_id: str
+    model_id: str
+    model_name: str
+    model_revision: str | None
+    thinking_default: ThinkingMode
+    thinking_controllable: bool
+    supported_thinking_modes: tuple[ThinkingMode, ...]
+    thinking_unavailable_reason: str | None
+    web_search_default: bool
+    web_search_available: bool
+    web_search_unavailable_reason: str | None
+
+
 class ReadinessResponse(BaseModel):
     """Dependency readiness without leaking credentials or stack traces."""
 
@@ -122,7 +146,7 @@ class ReadinessResponse(BaseModel):
 
 
 class CreateConversationRequest(BaseModel):
-    title: str | None = Field(default=None, max_length=300)
+    title: str | None = Field(default=None, max_length=74)
 
 
 class ConversationResponse(BaseModel):
@@ -147,7 +171,7 @@ class ConversationPageResponse(BaseModel):
 
 
 class RenameConversationRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=300)
+    title: str = Field(min_length=1, max_length=74)
 
     @field_validator("title")
     @classmethod
@@ -163,6 +187,14 @@ class RenameConversationRequest(BaseModel):
 class SendMessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)
     response_mode: ResponseMode = "wiki"
+    thinking_mode: ThinkingMode | None = None
+    web_search: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_web_mode(self) -> Self:
+        if self.response_mode == "wiki" and self.web_search is True:
+            raise ValueError("Public web search is Direct-only.")
+        return self
 
 
 class MessageResponse(BaseModel):
@@ -170,6 +202,7 @@ class MessageResponse(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str
     model: str
+    execution: ChatExecutionMetadata
 
 
 class PersistedMessageResponse(BaseModel):
@@ -179,6 +212,7 @@ class PersistedMessageResponse(BaseModel):
     content: str
     model: str | None
     created_at: str | None
+    execution: ChatExecutionMetadata | None = None
 
 
 def _timestamp(value: datetime | None) -> str | None:
@@ -187,6 +221,16 @@ def _timestamp(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value.isoformat()
+
+
+def _execution_metadata(value: dict[str, Any]) -> ChatExecutionMetadata | None:
+    raw = value.get("execution")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return ChatExecutionMetadata.model_validate(raw)
+    except ValueError:
+        return None
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
@@ -216,6 +260,7 @@ def _create_provider(settings: Settings) -> LocalLlamaCppProvider:
         timeout_seconds=settings.llm_timeout_seconds,
         context_tokens=settings.llm_context_tokens,
         enable_thinking=settings.llm_enable_thinking,
+        thinking_control=settings.llm_thinking_control,
         api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else None,
     )
 
@@ -246,6 +291,7 @@ def create_app(
     provider: LLMProvider | None = None,
     engine: Engine | None = None,
     update_service: UpdateService | None = None,
+    runtime_session_id: str | None = None,
 ) -> FastAPI:
     """Application factory with injectable infrastructure for deterministic tests."""
 
@@ -255,6 +301,7 @@ def create_app(
     database_engine = engine or create_database_engine(app_settings.database_url)
     session_factory = create_session_factory(database_engine)
     llm_provider = provider or _create_provider(app_settings)
+    chat_runtime_session_id = runtime_session_id or str(uuid.uuid4())
     source_deletion_worker = SourceDeletionWorker(
         session_factory=session_factory, settings=app_settings
     )
@@ -478,6 +525,16 @@ def create_app(
             error_type="urn:knemora:error:knowledge",
         )
 
+    @application.exception_handler(RuntimeControlError)
+    async def runtime_control_failure(request: Request, exc: RuntimeControlError) -> JSONResponse:
+        return _problem(
+            request,
+            http_status=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            title="Chat runtime control unavailable",
+            detail=str(exc),
+            error_type="urn:knemora:error:chat-runtime-control",
+        )
+
     @application.get("/api/v1/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:
         """Report process liveness without touching dependencies."""
@@ -500,6 +557,32 @@ def create_app(
         return CapabilitiesResponse(
             edition=metadata.product.edition,
             capabilities=metadata.capabilities,
+        )
+
+    @application.get(
+        "/api/v1/chat/capabilities",
+        response_model=ChatCapabilitiesResponse,
+        tags=["chat"],
+    )
+    def chat_capabilities() -> ChatCapabilitiesResponse:
+        control = llm_provider.capabilities.thinking_control
+        modes = supported_thinking_modes(control)
+        return ChatCapabilitiesResponse(
+            runtime_session_id=chat_runtime_session_id,
+            model_id=app_settings.llm_model,
+            model_name=app_settings.llm_display_name,
+            model_revision=app_settings.llm_revision,
+            thinking_default=default_thinking_mode(control, app_settings.llm_enable_thinking),
+            thinking_controllable=bool(modes),
+            supported_thinking_modes=modes,
+            thinking_unavailable_reason=(
+                None
+                if modes
+                else "The selected model's request-level thinking control is unverified."
+            ),
+            web_search_default=app_settings.web_search_enabled,
+            web_search_available=True,
+            web_search_unavailable_reason=None,
         )
 
     @application.get(
@@ -665,6 +748,7 @@ def create_app(
                 content=message.content,
                 model=message.provider_model,
                 created_at=_timestamp(message.created_at),
+                execution=_execution_metadata(message.message_metadata),
             )
             for message in repository.list_messages(conversation_id)
         ]
@@ -713,18 +797,31 @@ def create_app(
             settings=app_settings,
             session_factory=session_factory,
             model_name=app_settings.llm_model,
+            model_display_name=app_settings.llm_display_name,
+            model_revision=app_settings.llm_revision,
             max_output_tokens=app_settings.llm_max_output_tokens,
+        )
+        service.validate_controls(
+            response_mode=body.response_mode,
+            thinking_mode=body.thinking_mode,
+            web_search=body.web_search,
+            content=body.content,
         )
         content = await service.reply(
             conversation_id=conversation.id,
             user_id=conversation.user_id,
             content=body.content,
             response_mode=body.response_mode,
+            thinking_mode=body.thinking_mode,
+            web_search=body.web_search,
         )
+        execution = service.last_execution_metadata
+        assert execution is not None
         return MessageResponse(
             conversation_id=conversation.id,
             content=content,
-            model=app_settings.llm_model,
+            model=execution.model_id,
+            execution=execution,
         )
 
     @application.post(
@@ -747,7 +844,15 @@ def create_app(
             settings=app_settings,
             session_factory=session_factory,
             model_name=app_settings.llm_model,
+            model_display_name=app_settings.llm_display_name,
+            model_revision=app_settings.llm_revision,
             max_output_tokens=app_settings.llm_max_output_tokens,
+        )
+        service.validate_controls(
+            response_mode=body.response_mode,
+            thinking_mode=body.thinking_mode,
+            web_search=body.web_search,
+            content=body.content,
         )
 
         async def events() -> AsyncIterator[str]:
@@ -762,9 +867,20 @@ def create_app(
                     user_id=conversation.user_id,
                     content=body.content,
                     response_mode=body.response_mode,
+                    thinking_mode=body.thinking_mode,
+                    web_search=body.web_search,
                 ):
                     yield _sse("message.delta", {"event_id": event_id, "delta": chunk})
-                yield _sse("message.completed", {"event_id": event_id})
+                execution = service.last_execution_metadata
+                yield _sse(
+                    "message.completed",
+                    {
+                        "event_id": event_id,
+                        "execution": (
+                            execution.model_dump(mode="json") if execution is not None else None
+                        ),
+                    },
+                )
             except Exception as exc:
                 logger.exception("chat_stream_failed")
                 detail = (

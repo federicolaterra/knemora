@@ -145,7 +145,7 @@ def _check_model_server(env: dict[str, str]) -> None:
         )
 
 
-def launch_adk_web(paths: AppPaths, *, web_search_enabled: bool = False) -> int:
+def launch_adk_web(paths: AppPaths) -> int:
     """Run official ADK Web in the foreground with Knemora's existing agent."""
 
     api_directory = paths.repository / "apps" / "api"
@@ -160,7 +160,7 @@ def launch_adk_web(paths: AppPaths, *, web_search_enabled: bool = False) -> int:
     if not agent_directory.is_dir():
         raise RuntimeError(f"The existing ADK agent directory is missing: {agent_directory}")
 
-    env = runtime_environment(paths, web_search_enabled=web_search_enabled)
+    env = runtime_environment(paths)
     port, already_running = _select_port(paths, env)
     if port is None:
         raise RuntimeError(
@@ -180,10 +180,13 @@ def launch_adk_web(paths: AppPaths, *, web_search_enabled: bool = False) -> int:
         "Development server only. Use its own chat to populate Events and Trace; requests "
         "from the normal Knemora UI do not automatically appear there."
     )
-    print(
-        "Public web search is "
-        f"{'enabled' if web_search_enabled else 'disabled'} for this playground process."
-    )
+    web_default = env.get("KNEMORA_WEB_SEARCH_ENABLED", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    print(f"Direct Web default: {'ON' if web_default else 'OFF'} for this playground process.")
     print("Press Ctrl+C to stop ADK Web.", flush=True)
     command = [
         str(adk),

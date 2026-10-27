@@ -8,6 +8,19 @@ and established interfaces.
 
 ### Added
 
+- Request-scoped Fast / Deep chat controls with selected-model capability reporting, immutable
+  per-turn propagation through ADK and `LLMProvider`, and server-confirmed assistant execution
+  metadata for model, response mode, thinking, and Web outcomes.
+- Strict Direct-only public search with one deterministic bounded DDGS/DuckDuckGo attempt per
+  enabled turn, current-message-only privacy checks, and truthful failure/no-result reporting. Wiki
+  has no public-search authority under any runtime configuration.
+- Timezone-aware UTC message creation and browser-local rendering, with assistant-response-day
+  separators that avoid optimistic, duplicate, invalid, and midnight-crossover banners.
+- Optional Knemora-tested `gemma-4-e4b-q4-k-m` curated model with immutable Hugging Face revision,
+  exact size/SHA-256, real TXT/PDF/DOCX compilation acceptance, managed Qwen → Gemma → Qwen
+  preservation/readiness/rollback acceptance, and unchanged Qwen default.
+- Content-free Direct latency telemetry spanning llama.cpp prefill/decode and TTFT, provider and ADK
+  stages, history/session/persistence work, and browser stream/render timing.
 - Per-turn Wiki / Direct chat modes. Wiki remains the backwards-compatible default; Direct uses
   the selected local model through the existing ADK/provider path with all retrieval tools and
   schemas withheld.
@@ -19,8 +32,29 @@ and established interfaces.
 - Provider-neutral prompt budgeting with bounded history/tool evidence and actionable context or
   truncation errors.
 
+### Changed
+
+- The CLI welcome banner restores the original **Open-source, Local-first AI (SI) Second Brain**
+  tagline and appears only for `./knemora` and `./knemora start`; focused maintenance commands no
+  longer print it. The root README now links detailed updates, workspace/history, chat modes,
+  public-search, and ADK playground guidance from its Documentation list instead of embedding those
+  long sections.
+- Fast/Deep and Direct Web controls now behave as temporary browser-session overrides. Environment
+  values are startup defaults, ordinary `./knemora start` is sufficient, Wiki stays no-Web, and a
+  new backend runtime identity resets stale UI overrides to freshly read defaults.
+
 ### Fixed
 
+- Curated Gemma 4 E4B now advertises its verified request-scoped thinking capability, allowing the
+  same Fast/Deep controls as curated Qwen in Wiki and Direct instead of incorrectly disabling Deep.
+- Removed the obsolete managed-start Web-search flag completely; standard startup plus the
+  Direct-only session control is now the sole supported workflow.
+- Reprocessing no longer duplicates an otherwise identical fact when a model changes only the
+  proposal's claim key; exact text/classification matches retain the established claim identity and
+  byte-stable Wiki page.
+- Direct avoids constructing unused retrieval tools and uses a shorter equivalent policy prompt
+  with an explicit concise-answer rule, reducing matched Gemma prompt and completion work without
+  bypassing ADK, changing global generation settings, or weakening retrieval isolation.
 - Ordinary chat no longer enters compulsory Wiki retrieval, while organization-specific questions
   and co-referential follow-ups retain bounded owner-authorized grounding and citation handling.
 - Simple two-operand decimal expressions and terse arithmetic continuations now use a bounded
@@ -57,7 +91,6 @@ and established interfaces.
 - Stage progress reporting for Development preset startup.
 - Optional `./knemora --dev adk-web` launcher for the existing agent through Google's official
   loopback-only developer UI, with conflict-aware port selection and duplicate detection.
-- Launch-time `--yes-web-search` flags for normal and Development preset runtimes.
 - Embedded SQLite storage with versioned schema migration, enforced foreign keys, WAL concurrency,
   bounded lock waits, append-only audit triggers, and SQLite-safe online backup/restore.
 - Explicit, source-preserving `migrate-postgresql` workflow with a portable logical backup,

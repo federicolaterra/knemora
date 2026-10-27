@@ -3,6 +3,7 @@
 from app.llm.contracts import (
     ChatChunk,
     ChatMessage,
+    ChatPerformance,
     ChatRequest,
     ChatResponse,
     ChatRole,
@@ -24,6 +25,7 @@ from app.llm.local_llama_cpp import LocalLlamaCppProvider
 __all__ = [
     "ChatChunk",
     "ChatMessage",
+    "ChatPerformance",
     "ChatRequest",
     "ChatResponse",
     "ChatRole",

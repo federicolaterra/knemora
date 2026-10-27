@@ -49,6 +49,12 @@ describe("ConversationsView", () => {
             ),
           );
         }
+        if (
+          url.pathname === "/api/v1/conversations/conversation-1" &&
+          init?.method === "DELETE"
+        ) {
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }
         return Promise.resolve(
           new Response(
             JSON.stringify({
@@ -86,6 +92,12 @@ describe("ConversationsView", () => {
     await flushPromises();
 
     await wrapper.get("button[title='Rename conversation']").trigger("click");
+    expect(
+      wrapper
+        .get("input[aria-label='Conversation title']")
+        .attributes("maxlength"),
+    ).toBe("74");
+    expect(wrapper.text()).toContain("14/74");
     await wrapper
       .get("input[aria-label='Conversation title']")
       .setValue("Renamed title");
@@ -98,6 +110,22 @@ describe("ConversationsView", () => {
         ([input, init]) =>
           new URL(String(input)).pathname ===
             "/api/v1/conversations/conversation-1" && init?.method === "PATCH",
+      ),
+    ).toBe(true);
+
+    await wrapper.get("button[title='Delete conversation']").trigger("click");
+    expect(wrapper.get("[role='dialog']").text()).toContain(
+      "Delete conversation?",
+    );
+    expect(wrapper.get("[role='dialog']").text()).toContain("Renamed title");
+    await wrapper.get("[role='dialog'] button[autofocus]").trigger("click");
+    await flushPromises();
+
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          new URL(String(input)).pathname ===
+            "/api/v1/conversations/conversation-1" && init?.method === "DELETE",
       ),
     ).toBe(true);
   });

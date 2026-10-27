@@ -28,12 +28,14 @@ from knemora_bootstrap.adk_web import (
     launch_adk_web,
 )
 from knemora_bootstrap.cli import (
+    BANNER,
     SetupManager,
     StartupProgress,
     _delete_presets,
     _parser,
     _preset_files_available,
     _run_setup_command,
+    _should_show_banner,
     _virtual_environment_was_relocated,
     main,
 )
@@ -256,13 +258,13 @@ def test_runtime_verifies_the_api_demo_mode(monkeypatch: pytest.MonkeyPatch) -> 
     assert not RuntimeManager._api_mode_matches(demo=False)
 
 
-def test_runtime_restart_preserves_the_active_web_search_profile(
+def test_runtime_restart_reuses_mode_and_rereads_environment_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     paths = AppPaths(repository=tmp_path / "repository", data=tmp_path / "data")
     HomeCompatibilityService(paths.data).ensure_current()
     runtime = RuntimeManager(paths, MacOSAdapter())
-    runtime._write_mode("development", web_search_enabled=True)
+    runtime._write_mode("development")
     calls: list[tuple[str, object]] = []
     monkeypatch.setattr(runtime, "stop", lambda: calls.append(("stop", None)))
 
@@ -277,7 +279,7 @@ def test_runtime_restart_preserves_the_active_web_search_profile(
         ("stop", None),
         (
             "start",
-            {"demo": True, "open_apps": False, "web_search_enabled": True},
+            {"demo": True, "open_apps": False},
         ),
     ]
 
@@ -376,27 +378,42 @@ def test_deprecated_delete_alias_routes_to_canonical_implementation(
     assert "./knemora delete --presets" in error
 
 
-def test_start_and_adk_web_parser_flags_are_explicit() -> None:
-    implicit_start = _parser().parse_args([])
-    start = _parser().parse_args(["start", "--yes-web-search"])
-    presets = _parser().parse_args(["start", "--with-presets", "--yes-web-search"])
-    preset_alias = _parser().parse_args(["start-with-presets", "--yes-web-search"])
+def test_web_search_flag_is_rejected_everywhere(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root_defaults = _parser().parse_args([])
+    standard_start = _parser().parse_args(["start"])
     playground = _parser().parse_args(["--dev", "adk-web"])
 
-    assert implicit_start.yes_web_search is False
-    assert start.yes_web_search is True
-    assert presets.yes_web_search is True
-    assert presets.with_presets is True
-    assert preset_alias.with_presets is True
-    assert preset_alias.deprecated_replacement == "start --with-presets"
+    assert root_defaults.command is None
+    assert standard_start.command == "start"
     assert playground.command == "adk-web"
     assert playground.dev is True
-    assert playground.yes_web_search is False
     assert Settings(_env_file=None).web_search_enabled is False
+    for arguments in (
+        ["start", "--yes-web-search"],
+        ["start", "--with-presets", "--yes-web-search"],
+        ["start-with-presets", "--yes-web-search"],
+        ["--dev", "adk-web", "--yes-web-search"],
+    ):
+        with pytest.raises(SystemExit) as error:
+            _parser().parse_args(arguments)
+        assert error.value.code == 2
+        assert "unrecognized arguments: --yes-web-search" in capsys.readouterr().err
+
     migration = _parser().parse_args(
         ["migrate-postgresql", "--source-url", "postgresql+psycopg://example/db"]
     )
     assert migration.source_url == "postgresql+psycopg://example/db"
+
+
+def test_start_help_hides_the_deprecated_web_search_flag(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["start", "--help"])
+
+    assert "--yes-web-search" not in capsys.readouterr().out
 
 
 def test_root_help_hides_deprecated_preset_aliases() -> None:
@@ -406,6 +423,18 @@ def test_root_help_hides_deprecated_preset_aliases() -> None:
     assert "delete-presets" not in help_text
     assert "start               start the normal local environment" in help_text
     assert "delete              delete an explicitly selected Knemora target" in help_text
+
+
+def test_banner_copy_and_command_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert BANNER.endswith("Open-source, Local-first AI (SI) Second Brain\n")
+    assert _should_show_banner(_parser().parse_args([]).command, interactive=True)
+    assert _should_show_banner(_parser().parse_args(["start"]).command, interactive=True)
+    for command in ("setup", "status", "stop", "doctor", "models", "backup"):
+        assert not _should_show_banner(_parser().parse_args([command]).command, interactive=True)
+    assert not _should_show_banner(None, interactive=False)
+    monkeypatch.setenv("KNEMORA_BANNER_SHOWN", "1")
+    assert not _should_show_banner(None, interactive=True)
+    assert not _should_show_banner("start", interactive=True)
 
 
 def _uninstall_repository(path: Path) -> None:
@@ -740,7 +769,8 @@ def test_adk_web_launch_uses_locked_environment_existing_agent_and_selected_port
     for executable in ("adk", "python"):
         (api / ".venv" / "bin" / executable).write_text("", encoding="utf-8")
     (repository / ".env").write_text(
-        "KNEMORA_LLM_BASE_URL=http://localhost:11434\n", encoding="utf-8"
+        "KNEMORA_LLM_BASE_URL=http://localhost:11434\nKNEMORA_WEB_SEARCH_ENABLED=true\n",
+        encoding="utf-8",
     )
     paths = AppPaths(repository=repository, data=tmp_path / "data")
     monkeypatch.setattr("knemora_bootstrap.adk_web._select_port", lambda *args: (8080, False))
@@ -754,7 +784,7 @@ def test_adk_web_launch_uses_locked_environment_existing_agent_and_selected_port
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    assert launch_adk_web(paths, web_search_enabled=True) == 0
+    assert launch_adk_web(paths) == 0
     command = observed["command"]
     assert isinstance(command, list)
     assert command[:6] == [
@@ -823,6 +853,22 @@ def test_model_registry_resolves_default_and_validates_existing_artifact(tmp_pat
     assert default.filename == "qwen3-8b-Q3_K_M.gguf"
     assert default.context_tokens == 8192
     assert get_model("qwen3.8-27b-iq2-s").filename == "Qwen3.8-27B-GSQ-RCO-IQ2_S.gguf"
+    gemma = get_model("gemma-4-e4b-q4-k-m")
+    assert gemma.filename == "gemma-4-E4B-it-Q4_K_M.gguf"
+    assert gemma.revision == "bfc15c382204943c3a8fff0c750b94ae2364d7a3"
+    assert gemma.sha256 == "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87"
+    assert gemma.size_bytes == 4_977_171_584
+    assert gemma.context_tokens == 8192
+    assert gemma.advertised_context_tokens == 131_072
+    assert gemma.verification_status == "knemora-tested"
+    assert gemma.compatibility_status == "knemora-tested"
+    assert default.thinking_control == "chat_template_enable_thinking"
+    assert gemma.thinking_control == "chat_template_enable_thinking"
+    assert gemma.download_url == (
+        "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/"
+        "bfc15c382204943c3a8fff0c750b94ae2364d7a3/"
+        "gemma-4-E4B-it-Q4_K_M.gguf?download=true"
+    )
     assert manager.ensure(model) == tmp_path / "test.gguf"
 
 
@@ -875,13 +921,18 @@ def test_demo_runtime_owns_seeded_knowledge_as_the_bootstrap_administrator(
     assert normal["KNEMORA_DATABASE_URL"].endswith("/normal.db")
     assert normal["KNEMORA_SOURCE_STORE_PATH"] != values["KNEMORA_SOURCE_STORE_PATH"]
     assert normal["KNEMORA_KNOWLEDGE_PATH"] != values["KNEMORA_KNOWLEDGE_PATH"]
-    assert (
-        runtime_environment(paths, web_search_enabled=False)["KNEMORA_WEB_SEARCH_ENABLED"]
-        == "false"
+    assert normal["KNEMORA_WEB_SEARCH_ENABLED"] == "false"
+
+    repository_env = repository / ".env"
+    repository_env.write_text(
+        repository_env.read_text(encoding="utf-8").replace(
+            "KNEMORA_WEB_SEARCH_ENABLED=false",
+            "KNEMORA_WEB_SEARCH_ENABLED=true",
+        ),
+        encoding="utf-8",
     )
-    assert (
-        runtime_environment(paths, web_search_enabled=True)["KNEMORA_WEB_SEARCH_ENABLED"] == "true"
-    )
+
+    assert runtime_environment(paths, demo=False)["KNEMORA_WEB_SEARCH_ENABLED"] == "true"
 
 
 def test_development_catalog_is_deterministic_meaningful_and_connected() -> None:

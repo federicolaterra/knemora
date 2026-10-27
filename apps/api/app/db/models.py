@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -24,12 +24,23 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 
+def _utc_now() -> datetime:
+    """Capture the host clock as an unambiguous UTC instant."""
+
+    return datetime.now(UTC)
+
+
 class TimestampMixin:
     """UTC database timestamps shared by mutable records."""
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, server_default=func.now()
+    )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        default=_utc_now,
+        server_default=func.now(),
+        onupdate=_utc_now,
     )
 
 
@@ -138,7 +149,9 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text)
     provider_model: Mapped[str | None] = mapped_column(String(300))
     message_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, server_default=func.now()
+    )
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 

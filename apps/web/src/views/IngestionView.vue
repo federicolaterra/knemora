@@ -18,6 +18,8 @@ const page = ref(1);
 const total = ref(0);
 const totalPages = ref(0);
 const loading = ref(true);
+const refreshing = ref(false);
+const retryingId = ref("");
 const error = ref("");
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 let requestSequence = 0;
@@ -107,7 +109,20 @@ function clearFilters() {
   fileType.value = "all";
 }
 
+async function refreshPage() {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  try {
+    await loadPage();
+  } finally {
+    refreshing.value = false;
+  }
+}
+
 async function retry(document: DocumentRecord) {
+  if (retryingId.value) return;
+  retryingId.value = document.document_version_id;
+  error.value = "";
   try {
     if (document.ingestion_status === "FAILED")
       await api.retryIngestion(document.ingestion_job_id);
@@ -115,6 +130,8 @@ async function retry(document: DocumentRecord) {
     await loadPage();
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : "Retry failed.";
+  } finally {
+    retryingId.value = "";
   }
 }
 </script>
@@ -132,10 +149,11 @@ async function retry(document: DocumentRecord) {
         ><button
           class="button button-secondary inline-flex [gap:8px] items-center justify-center [min-height:38px] [padding:0_15px] [border:1px_solid_transparent] rounded-action text-label font-bold no-underline [transition:0.16s_ease] [color:#33433e] bg-surface [border-color:#d5ddd8] hover:[border-color:#a9bbb4]"
           type="button"
-          :disabled="loading"
-          @click="loadPage()"
+          :disabled="loading || refreshing"
+          @click="refreshPage"
         >
-          <RotateCw :size="16" /> Refresh
+          <RotateCw :size="16" :class="{ 'animate-spin-fast': refreshing }" />
+          {{ refreshing ? "Refreshing…" : "Refresh" }}
         </button></template
       >
     </PageHeader>
@@ -329,9 +347,17 @@ async function retry(document: DocumentRecord) {
             v-if="!system.demoActive"
             class="button button-secondary inline-flex [gap:8px] items-center justify-center [min-height:38px] [padding:0_15px] [border:1px_solid_transparent] rounded-action text-label font-bold no-underline [transition:0.16s_ease] [color:#33433e] bg-surface [border-color:#d5ddd8] hover:[border-color:#a9bbb4]"
             type="button"
+            :disabled="Boolean(retryingId)"
             @click="retry(document)"
           >
-            Retry
+            <RotateCw
+              v-if="retryingId === document.document_version_id"
+              :size="15"
+              class="animate-spin-fast"
+            />
+            {{
+              retryingId === document.document_version_id ? "Loading…" : "Retry"
+            }}
           </button>
         </div>
         <div

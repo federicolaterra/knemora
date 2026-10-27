@@ -60,7 +60,6 @@ class RuntimeManager:
         demo: bool = False,
         open_apps: bool = True,
         demo_database_prepared: bool = False,
-        web_search_enabled: bool = False,
     ) -> None:
         requested_mode = "development" if demo else "normal"
         try:
@@ -69,18 +68,12 @@ class RuntimeManager:
             )
         except (OSError, ValueError, TypeError) as exc:
             raise RuntimeFailure(f"Model selection is missing or invalid: {exc}.") from exc
-        profile_changed = (
-            self.current_mode() != requested_mode
-            or self.current_web_search_enabled() != web_search_enabled
-        )
+        profile_changed = self.current_mode() != requested_mode
         selection_changed = isinstance(selection_payload.get("previous_selection"), dict)
         if (profile_changed or selection_changed) and any(
             status.running for status in self.status() if status.name != "database"
         ):
-            print(
-                f"Switching to {requested_mode} mode with public web search "
-                f"{'enabled' if web_search_enabled else 'disabled'}."
-            )
+            print(f"Switching to {requested_mode} mode.")
             self.stop()
         try:
             selected_model = ModelRegistry(self.paths.model_registry).get(
@@ -116,11 +109,7 @@ class RuntimeManager:
             raise RuntimeFailure(
                 f"Could not record the startup context plan: {detail}.{suffix}"
             ) from exc
-        env = runtime_environment(
-            self.paths,
-            demo=demo,
-            web_search_enabled=web_search_enabled,
-        )
+        env = runtime_environment(self.paths, demo=demo)
         try:
             selection = self.native_runtime.resolve_llama()
         except NativeRuntimeError as exc:
@@ -153,7 +142,7 @@ class RuntimeManager:
             suffix = " The prior model selection was restored." if rolled_back else ""
             raise RuntimeFailure("; ".join(failures) + suffix)
         confirm_model_selection(self.paths)
-        self._write_mode(requested_mode, web_search_enabled=web_search_enabled)
+        self._write_mode(requested_mode)
         if open_apps:
             self.open_apps(demo=demo)
 
@@ -208,12 +197,10 @@ class RuntimeManager:
 
     def restart(self, *, open_apps: bool = True) -> None:
         demo = self.current_mode() == "development"
-        web_search_enabled = self.current_web_search_enabled()
         self.stop()
         self.start(
             demo=demo,
             open_apps=open_apps,
-            web_search_enabled=web_search_enabled,
         )
 
     def status(self) -> tuple[ServiceStatus, ...]:
@@ -289,23 +276,10 @@ class RuntimeManager:
             return "normal"
         return mode if isinstance(mode, str) else "normal"
 
-    def current_web_search_enabled(self) -> bool:
-        try:
-            enabled = json.loads((self.paths.runtime / "mode.json").read_text()).get(
-                "web_search_enabled", False
-            )
-        except (OSError, ValueError, AttributeError):
-            return False
-        return enabled is True
-
-    def _write_mode(self, mode: str, *, web_search_enabled: bool) -> None:
+    def _write_mode(self, mode: str) -> None:
         self.paths.runtime.mkdir(parents=True, exist_ok=True)
         (self.paths.runtime / "mode.json").write_text(
-            json.dumps(
-                {"mode": mode, "web_search_enabled": web_search_enabled},
-                sort_keys=True,
-            )
-            + "\n"
+            json.dumps({"mode": mode}, sort_keys=True) + "\n"
         )
 
     @staticmethod

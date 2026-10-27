@@ -2,7 +2,9 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any, Literal, cast
 
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine
@@ -35,18 +37,32 @@ def build_test_engine() -> Engine:
     return engine
 
 
-def build_test_app(*, provider: object | None = None, engine: Engine | None = None) -> FastAPI:
+def build_test_app(
+    *,
+    provider: object | None = None,
+    engine: Engine | None = None,
+    web_search_enabled: bool = False,
+    llm_enable_thinking: bool = False,
+    llm_model: str = "fake-local",
+    llm_display_name: str = "Fake Local",
+    runtime_session_id: str | None = None,
+) -> FastAPI:
     engine = engine or build_test_engine()
     settings = Settings(
         _env_file=None,
         database_url="sqlite+pysqlite://",
-        llm_model="fake-local",
+        llm_model=llm_model,
+        llm_display_name=llm_display_name,
+        llm_revision="test-revision",
+        llm_enable_thinking=llm_enable_thinking,
+        web_search_enabled=web_search_enabled,
         authentication_required=False,
     )
     return create_app(
         settings=settings,
         provider=provider or FakeLLMProvider(),  # type: ignore[arg-type]
         engine=engine,
+        runtime_session_id=runtime_session_id,
     )
 
 
@@ -115,8 +131,14 @@ class ContinuityLanguageProvider:
 class ResponseModeProvider:
     """Spy proving per-invocation tool isolation at the provider boundary."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        thinking_control: Literal[
+            "chat_template_enable_thinking", "fixed_off", "unverified"
+        ] = "unverified",
+    ) -> None:
         self.requests: list[ChatRequest] = []
+        self.thinking_control = thinking_control
 
     @property
     def capabilities(self) -> LLMCapabilities:
@@ -125,6 +147,7 @@ class ResponseModeProvider:
             structured_output=True,
             cancellation=True,
             max_context_tokens=8192,
+            thinking_control=self.thinking_control,
         )
 
     async def health(self) -> LLMHealth:
@@ -245,7 +268,6 @@ def test_response_mode_defaults_validates_and_enforces_direct_no_retrieval() -> 
         "get_backlinks",
         "read_source_reference",
         "analyze_dataset",
-        "search_web",
     }
     assert direct_request.tools == ()
     assert direct_request.tool_choice is None
@@ -289,6 +311,492 @@ def test_switching_modes_is_turn_bound_and_new_conversations_default_to_wiki() -
     ]
     assert direct_request.messages[-1].content == "Turn in direct"
     assert all(message.role != "tool" for message in direct_request.messages)
+
+
+def test_direct_web_default_and_request_overrides_never_enable_wiki(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeDDGS:
+        def __init__(self, *, timeout: float) -> None:
+            assert timeout == 8
+
+        def text(self, query: str, *, max_results: int, backend: str) -> list[dict[str, str]]:
+            calls.append(query)
+            assert max_results == 5
+            assert backend == "duckduckgo"
+            return [
+                {
+                    "title": "Malta forecast",
+                    "body": "Public forecast snippet",
+                    "href": "https://example.test/weather",
+                }
+            ]
+
+    monkeypatch.setattr("app.public_web.DDGS", FakeDDGS)
+
+    async def exercise() -> tuple[
+        ResponseModeProvider,
+        ResponseModeProvider,
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+        dict[str, Any],
+    ]:
+        off_provider = ResponseModeProvider()
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=build_test_app(
+                    provider=off_provider,
+                    web_search_enabled=False,
+                    runtime_session_id="runtime-off",
+                )
+            ),
+            base_url="http://test",
+        ) as client:
+            conversation_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            private_turn = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "PRIVATE WIKI SECRET", "response_mode": "wiki"},
+            )
+            wiki_blocked = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Malta weather", "response_mode": "wiki", "web_search": True},
+            )
+            direct_default_off = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Local model only", "response_mode": "direct"},
+            )
+            first_on = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "content": "Search the public web for Malta weather tomorrow",
+                    "response_mode": "direct",
+                    "web_search": True,
+                },
+            )
+            second_on = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "content": "Search the public web for Malta weather weekend",
+                    "response_mode": "direct",
+                    "web_search": True,
+                },
+            )
+            off_messages = (
+                await client.get(f"/api/v1/conversations/{conversation_id}/messages")
+            ).json()
+            assert private_turn.status_code == 200
+            assert wiki_blocked.status_code == 422
+            assert direct_default_off.status_code == 200
+            assert first_on.status_code == second_on.status_code == 200
+
+        on_provider = ResponseModeProvider()
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=build_test_app(
+                    provider=on_provider,
+                    web_search_enabled=True,
+                    runtime_session_id="runtime-on",
+                )
+            ),
+            base_url="http://test",
+        ) as client:
+            conversation_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            first_default_on = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Malta weather Monday", "response_mode": "direct"},
+            )
+            second_default_on = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Malta weather Tuesday", "response_mode": "direct"},
+            )
+            explicit_off = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "content": "No network for this turn",
+                    "response_mode": "direct",
+                    "web_search": False,
+                },
+            )
+            wiki_local = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Wiki remains local", "response_mode": "wiki"},
+            )
+            wiki_blocked = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Malta weather", "response_mode": "wiki", "web_search": True},
+            )
+            on_messages = (
+                await client.get(f"/api/v1/conversations/{conversation_id}/messages")
+            ).json()
+            capabilities = (await client.get("/api/v1/chat/capabilities")).json()
+            assert first_default_on.status_code == second_default_on.status_code == 200
+            assert explicit_off.status_code == wiki_local.status_code == 200
+            assert wiki_blocked.status_code == 422
+        return off_provider, on_provider, off_messages, on_messages, capabilities
+
+    off_provider, on_provider, off_messages, on_messages, capabilities = asyncio.run(exercise())
+
+    assert calls == [
+        "Malta weather tomorrow",
+        "Malta weather weekend",
+        "Malta weather Monday",
+        "Malta weather Tuesday",
+    ]
+    assert all("PRIVATE WIKI SECRET" not in query for query in calls)
+    local_direct = next(
+        request
+        for request in off_provider.requests
+        if request.messages[-1].content == "Local model only"
+    )
+    web_requests = [
+        request
+        for request in off_provider.requests
+        if "[PUBLIC WEB OUTCOME]" in request.messages[-1].content
+    ]
+    assert local_direct.tools == ()
+    assert len(web_requests) == 2
+    assert all(request.tools == () for request in web_requests)
+    assert all(
+        "https://example.test/weather" in request.messages[-1].content for request in web_requests
+    )
+    off_assistants = [message for message in off_messages if message["role"] == "assistant"]
+    assert [message["execution"]["web_outcome"] for message in off_assistants] == [
+        "off",
+        "off",
+        "success",
+        "success",
+    ]
+    on_assistants = [message for message in on_messages if message["role"] == "assistant"]
+    assert [message["execution"]["web_outcome"] for message in on_assistants] == [
+        "success",
+        "success",
+        "off",
+        "off",
+    ]
+    assert on_provider.requests[-1].tools
+    assert capabilities["runtime_session_id"] == "runtime-on"
+    assert capabilities["web_search_default"] is True
+    assert capabilities["web_search_available"] is True
+
+
+def test_direct_web_no_results_is_disclosed_and_model_answer_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EmptyDDGS:
+        def __init__(self, *, timeout: float) -> None:
+            pass
+
+        def text(self, query: str, *, max_results: int, backend: str) -> list[dict[str, str]]:
+            return []
+
+    monkeypatch.setattr("app.public_web.DDGS", EmptyDDGS)
+
+    async def exercise() -> tuple[str, list[dict[str, Any]]]:
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=build_test_app(provider=ResponseModeProvider(), web_search_enabled=True)
+            ),
+            base_url="http://test",
+        ) as client:
+            conversation_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            response = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages/stream",
+                json={
+                    "content": "Malta weather tomorrow",
+                    "response_mode": "direct",
+                    "web_search": True,
+                },
+            )
+            messages = (
+                await client.get(f"/api/v1/conversations/{conversation_id}/messages")
+            ).json()
+        return response.text, messages
+
+    stream, messages = asyncio.run(exercise())
+    assert "returned no usable results" in stream
+    assert "Direct response." in stream
+    assert messages[-1]["execution"]["web_outcome"] == "no_results"
+    assert messages[-1]["execution"]["web_succeeded"] is False
+
+
+def test_thinking_controls_are_request_scoped_persisted_and_concurrent() -> None:
+    async def exercise() -> tuple[list[ChatRequest], list[dict[str, Any]], dict[str, Any]]:
+        provider = ResponseModeProvider("chat_template_enable_thinking")
+        transport = ASGITransport(app=build_test_app(provider=provider))
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            fast_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            deep_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            fast, deep = await asyncio.gather(
+                client.post(
+                    f"/api/v1/conversations/{fast_id}/messages",
+                    json={
+                        "content": "Fast turn",
+                        "response_mode": "direct",
+                        "thinking_mode": "fast",
+                    },
+                ),
+                client.post(
+                    f"/api/v1/conversations/{deep_id}/messages",
+                    json={
+                        "content": "Deep turn",
+                        "response_mode": "direct",
+                        "thinking_mode": "deep",
+                    },
+                ),
+            )
+            assert fast.status_code == deep.status_code == 200
+            fast_messages = (await client.get(f"/api/v1/conversations/{fast_id}/messages")).json()
+            deep_messages = (await client.get(f"/api/v1/conversations/{deep_id}/messages")).json()
+            capabilities = (await client.get("/api/v1/chat/capabilities")).json()
+        return provider.requests, [fast_messages[-1], deep_messages[-1]], capabilities
+
+    requests, assistants, capabilities = asyncio.run(exercise())
+    by_prompt = {
+        next(message.content for message in request.messages if message.role == "user"): request
+        for request in requests
+    }
+    assert by_prompt["Fast turn"].thinking is False
+    assert by_prompt["Deep turn"].thinking is True
+    assert [item["execution"]["thinking_mode"] for item in assistants] == ["fast", "deep"]
+    assert all(item["execution"]["model_name"] == "Fake Local" for item in assistants)
+    assert capabilities["thinking_default"] == "fast"
+    assert capabilities["supported_thinking_modes"] == ["fast", "deep"]
+
+
+@pytest.mark.parametrize(
+    ("model_id", "model_name"),
+    [
+        ("qwen3-8b-q3-k-m", "Qwen3 8B GSQ Q3_K_M"),
+        ("gemma-4-e4b-q4-k-m", "Gemma 4 E4B Instruct (Q4_K_M)"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("environment_default", "expected_default"),
+    [(False, "fast"), (True, "deep")],
+)
+def test_curated_models_support_fast_and_deep_in_wiki_and_direct(
+    model_id: str,
+    model_name: str,
+    environment_default: bool,
+    expected_default: str,
+) -> None:
+    async def exercise() -> tuple[list[ChatRequest], list[dict[str, Any]], dict[str, Any]]:
+        provider = ResponseModeProvider("chat_template_enable_thinking")
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=build_test_app(
+                    provider=provider,
+                    llm_enable_thinking=environment_default,
+                    llm_model=model_id,
+                    llm_display_name=model_name,
+                )
+            ),
+            base_url="http://test",
+        ) as client:
+            capabilities = (await client.get("/api/v1/chat/capabilities")).json()
+            conversation_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            deep = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "content": "Wiki Deep turn",
+                    "response_mode": "wiki",
+                    "thinking_mode": "deep",
+                },
+            )
+            fast = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "content": "Direct Fast turn",
+                    "response_mode": "direct",
+                    "thinking_mode": "fast",
+                },
+            )
+            defaulted = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Direct default turn", "response_mode": "direct"},
+            )
+        assert deep.status_code == fast.status_code == defaulted.status_code == 200
+        return (
+            provider.requests,
+            [
+                deep.json()["execution"],
+                fast.json()["execution"],
+                defaulted.json()["execution"],
+            ],
+            capabilities,
+        )
+
+    requests, executions, capabilities = asyncio.run(exercise())
+    by_prompt = {
+        [message.content for message in request.messages if message.role == "user"][-1]: request
+        for request in requests
+    }
+    assert capabilities["model_id"] == model_id
+    assert capabilities["model_name"] == model_name
+    assert capabilities["thinking_default"] == expected_default
+    assert capabilities["thinking_controllable"] is True
+    assert capabilities["supported_thinking_modes"] == ["fast", "deep"]
+    assert by_prompt["Wiki Deep turn"].thinking is True
+    assert by_prompt["Wiki Deep turn"].tools
+    assert by_prompt["Direct Fast turn"].thinking is False
+    assert by_prompt["Direct Fast turn"].tools == ()
+    assert by_prompt["Direct default turn"].thinking is environment_default
+    assert [execution["thinking_mode"] for execution in executions] == [
+        "deep",
+        "fast",
+        expected_default,
+    ]
+    assert all(execution["model_name"] == model_name for execution in executions)
+
+
+def test_fixed_off_model_resolves_deep_environment_default_to_fast() -> None:
+    async def exercise() -> tuple[ChatRequest, dict[str, Any], dict[str, Any]]:
+        provider = ResponseModeProvider("fixed_off")
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=build_test_app(
+                    provider=provider,
+                    llm_enable_thinking=True,
+                    runtime_session_id="fixed-off-runtime",
+                )
+            ),
+            base_url="http://test",
+        ) as client:
+            conversation_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            response = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={"content": "Use the supported default", "response_mode": "direct"},
+            )
+            capabilities = (await client.get("/api/v1/chat/capabilities")).json()
+        assert response.status_code == 200
+        return provider.requests[-1], response.json()["execution"], capabilities
+
+    request, execution, capabilities = asyncio.run(exercise())
+    assert request.thinking is False
+    assert execution["thinking_mode"] == "fast"
+    assert capabilities["thinking_default"] == "fast"
+    assert capabilities["supported_thinking_modes"] == ["fast"]
+
+
+def test_runtime_session_capabilities_reinitialize_environment_defaults() -> None:
+    async def capabilities(
+        *, runtime_id: str, web_default: bool, deep_default: bool
+    ) -> dict[str, Any]:
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=build_test_app(
+                    provider=ResponseModeProvider("chat_template_enable_thinking"),
+                    web_search_enabled=web_default,
+                    llm_enable_thinking=deep_default,
+                    runtime_session_id=runtime_id,
+                )
+            ),
+            base_url="http://test",
+        ) as client:
+            return cast(
+                dict[str, Any],
+                (await client.get("/api/v1/chat/capabilities")).json(),
+            )
+
+    first = asyncio.run(capabilities(runtime_id="runtime-a", web_default=False, deep_default=False))
+    restarted = asyncio.run(
+        capabilities(runtime_id="runtime-b", web_default=True, deep_default=True)
+    )
+
+    assert (
+        first["runtime_session_id"],
+        first["web_search_default"],
+        first["thinking_default"],
+    ) == ("runtime-a", False, "fast")
+    assert (
+        restarted["runtime_session_id"],
+        restarted["web_search_default"],
+        restarted["thinking_default"],
+    ) == ("runtime-b", True, "deep")
+
+
+def test_concurrent_direct_web_overrides_are_request_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class FakeDDGS:
+        def __init__(self, *, timeout: float) -> None:
+            pass
+
+        def text(self, query: str, *, max_results: int, backend: str) -> list[dict[str, str]]:
+            calls.append(query)
+            return [
+                {
+                    "title": "Public result",
+                    "body": "Bounded snippet",
+                    "href": "https://example.test/result",
+                }
+            ]
+
+    monkeypatch.setattr("app.public_web.DDGS", FakeDDGS)
+
+    async def exercise() -> list[list[dict[str, Any]]]:
+        provider = ResponseModeProvider()
+        async with AsyncClient(
+            transport=ASGITransport(
+                app=build_test_app(provider=provider, web_search_enabled=False)
+            ),
+            base_url="http://test",
+        ) as client:
+            on_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            off_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            on_response, off_response = await asyncio.gather(
+                client.post(
+                    f"/api/v1/conversations/{on_id}/messages",
+                    json={
+                        "content": "Public Malta weather",
+                        "response_mode": "direct",
+                        "web_search": True,
+                    },
+                ),
+                client.post(
+                    f"/api/v1/conversations/{off_id}/messages",
+                    json={
+                        "content": "Private local turn",
+                        "response_mode": "direct",
+                        "web_search": False,
+                    },
+                ),
+            )
+            assert on_response.status_code == off_response.status_code == 200
+            return [
+                (await client.get(f"/api/v1/conversations/{conversation_id}/messages")).json()
+                for conversation_id in (on_id, off_id)
+            ]
+
+    on_messages, off_messages = asyncio.run(exercise())
+    assert calls == ["Public Malta weather"]
+    assert on_messages[-1]["execution"]["web_outcome"] == "success"
+    assert off_messages[-1]["execution"]["web_outcome"] == "off"
+
+
+def test_unverified_thinking_request_fails_before_model_call() -> None:
+    async def exercise() -> tuple[int, list[ChatRequest]]:
+        provider = ResponseModeProvider()
+        transport = ASGITransport(app=build_test_app(provider=provider))
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            conversation_id = (await client.post("/api/v1/conversations", json={})).json()["id"]
+            response = await client.post(
+                f"/api/v1/conversations/{conversation_id}/messages",
+                json={
+                    "content": "Deep turn",
+                    "response_mode": "direct",
+                    "thinking_mode": "deep",
+                },
+            )
+        return response.status_code, provider.requests
+
+    status_code, requests = asyncio.run(exercise())
+    assert status_code == 422
+    assert requests == []
 
 
 def test_simultaneous_wiki_and_direct_requests_do_not_share_tools(tmp_path: Path) -> None:
@@ -577,6 +1085,16 @@ def test_conversation_titles_rename_search_and_pagination() -> None:
             invalid_control = await client.patch(
                 f"/api/v1/conversations/{conversation_id}", json={"title": "Bad\u0007title"}
             )
+            invalid_long = await client.patch(
+                f"/api/v1/conversations/{conversation_id}", json={"title": "x" * 75}
+            )
+            auto_titled = await client.post("/api/v1/conversations", json={})
+            auto_titled_id = auto_titled.json()["id"]
+            await client.post(
+                f"/api/v1/conversations/{auto_titled_id}/messages",
+                json={"content": "A" * 100},
+            )
+            auto_titled_detail = await client.get(f"/api/v1/conversations/{auto_titled_id}")
             for index in range(16):
                 await client.post("/api/v1/conversations", json={"title": f"History {index:02}"})
             recent = await client.get("/api/v1/conversations")
@@ -591,9 +1109,11 @@ def test_conversation_titles_rename_search_and_pagination() -> None:
         assert preserved.json()["title"] == "Roadmap 🚀"
         assert invalid_empty.status_code == 422
         assert invalid_control.status_code == 422
+        assert invalid_long.status_code == 422
+        assert auto_titled_detail.json()["title"] == "A" * 74
         assert len(recent.json()) == 8
         assert page.json()["page_limit"] == 15
-        assert page.json()["total"] == 17
+        assert page.json()["total"] == 18
         assert len(page.json()["items"]) == 15
         assert searched.json()["total"] == 1
         assert messages.json()[0]["created_at"].endswith("+00:00")

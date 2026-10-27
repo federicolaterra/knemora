@@ -2,8 +2,8 @@
 import { useTextareaAutosize } from "@vueuse/core";
 import {
   Check,
-  CircleQuestionMark,
   Clipboard,
+  Globe2,
   ArrowRight,
   MessageSquarePlus,
   Pencil,
@@ -19,11 +19,31 @@ import { useRoute, useRouter } from "vue-router";
 
 import { api, openOriginalSource, streamMessage } from "../api/client";
 import ChatResponseContent from "../components/ChatResponseContent.vue";
+import ConfirmActionModal from "../components/ConfirmActionModal.vue";
+import MiniScrollbar from "../components/MiniScrollbar.vue";
 import PageHeader from "../components/PageHeader.vue";
 import { useSystemStore } from "../stores/system";
 import { useWorkspaceStore } from "../stores/workspace";
-import type { Conversation, Message, ResponseMode } from "../types";
-import { groupMessagesByPromptDay, promptTimeLabel } from "../utils/chatDates";
+import type {
+  ChatCapabilities,
+  ChatExecutionMetadata,
+  Conversation,
+  Message,
+  ResponseMode,
+  ThinkingMode,
+} from "../types";
+import {
+  groupMessagesByPromptDay,
+  localDateTimeTitle,
+  promptTimeLabel,
+} from "../utils/chatDates";
+
+const conversationTitleMaxLength = 74;
+type MiniScrollToOptions = {
+  top?: number;
+  left?: number;
+  behavior?: "auto" | "instant" | "smooth";
+};
 
 const route = useRoute();
 const router = useRouter();
@@ -46,17 +66,44 @@ const clock = ref(new Date());
 const clockTimer = window.setInterval(() => {
   clock.value = new Date();
 }, 30_000);
-const chatScroll = ref<HTMLElement>();
+const chatScroll = ref<{
+  scrollHeight: () => number;
+  scrollTo: (options: MiniScrollToOptions) => void;
+}>();
 const { textarea, input } = useTextareaAutosize({ styleProp: "height" });
 // The template resolves this ref by name; keep an explicit script read for static analysis.
 void textarea;
 const progress = ref("Understanding request…");
 const responseMode = ref<ResponseMode>("wiki");
-const modeHelp = computed(() =>
-  responseMode.value === "wiki"
-    ? "Wiki: answers grounded in your knowledge"
-    : "Direct: local AI without knowledge search",
-);
+const thinkingMode = ref<ThinkingMode | null>(null);
+const thinkingOptions: ThinkingMode[] = ["fast", "deep"];
+const directWebPreference = ref(false);
+const chatCapabilities = ref<ChatCapabilities | null>(null);
+const runtimeSessionId = ref<string | null>(null);
+const webSearch = computed({
+  get: () => responseMode.value === "direct" && directWebPreference.value,
+  set: (enabled: boolean) => {
+    if (responseMode.value === "direct") directWebPreference.value = enabled;
+  },
+});
+const webHelp = computed(() => {
+  if (responseMode.value === "wiki")
+    return "Web unavailable in Wiki to keep private knowledge local";
+  return webSearch.value
+    ? "Web ON for this browser session"
+    : "Web OFF · local model only";
+});
+
+function thinkingOptionTitle(option: ThinkingMode): string {
+  if (!chatCapabilities.value?.supported_thinking_modes.includes(option))
+    return (
+      chatCapabilities.value?.thinking_unavailable_reason ??
+      `${option === "deep" ? "Deep" : "Fast"} is unavailable for the selected model.`
+    );
+  return option === "deep"
+    ? "Deep: requests model thinking when supported"
+    : "Fast: requests thinking off";
+}
 let progressTimer: ReturnType<typeof setInterval> | undefined;
 const wikiProgressSteps = [
   "Understanding request…",
@@ -65,8 +112,64 @@ const wikiProgressSteps = [
   "Generating response…",
 ];
 const directProgressSteps = ["Generating answer…"];
+const directWebProgressSteps = ["Searching public web…", "Generating answer…"];
 const demoPrompt =
   "Which gateway, owner, policy, and freeze day apply to ORBIT-LANTERN? Cite sources.";
+
+function roundedTiming(value: number | null): number | null {
+  return value === null ? null : Number(value.toFixed(3));
+}
+
+function modelLabel(message: Message): string | null {
+  return message.execution?.model_name || message.model || null;
+}
+
+function thinkingLabel(
+  execution?: ChatExecutionMetadata | null,
+): string | null {
+  if (!execution?.thinking_mode) return null;
+  return execution.thinking_mode === "deep" ? "Deep" : "Fast";
+}
+
+function responseModeLabel(
+  execution?: ChatExecutionMetadata | null,
+): string | null {
+  if (!execution) return null;
+  return execution.response_mode === "direct" ? "Direct" : "Wiki";
+}
+
+function webLabel(execution?: ChatExecutionMetadata | null): string | null {
+  if (!execution) return null;
+  if (!execution.web_requested) return "Web OFF";
+  if (execution.web_outcome === "error") return "Web ON (failed)";
+  if (execution.web_outcome === "no_results") return "Web ON (no results)";
+  return execution.web_succeeded ? "Web ON" : "Web ON (not completed)";
+}
+
+async function loadChatCapabilities(): Promise<boolean> {
+  try {
+    const capabilities = await api.readChatCapabilities();
+    const runtimeChanged =
+      runtimeSessionId.value !== capabilities.runtime_session_id;
+    chatCapabilities.value = capabilities;
+    if (runtimeChanged) {
+      runtimeSessionId.value = capabilities.runtime_session_id;
+      const supported = capabilities.supported_thinking_modes;
+      thinkingMode.value = supported.includes(capabilities.thinking_default)
+        ? capabilities.thinking_default
+        : (supported[0] ?? null);
+      directWebPreference.value = capabilities.web_search_default;
+    }
+    return true;
+  } catch {
+    if (runtimeSessionId.value === null) {
+      chatCapabilities.value = null;
+      thinkingMode.value = null;
+      directWebPreference.value = false;
+    }
+    return false;
+  }
+}
 
 const activeConversation = computed(
   () =>
@@ -111,7 +214,10 @@ async function newConversation(resetMode = true) {
 
 async function beginRename(conversation: Conversation) {
   editingId.value = conversation.id;
-  editTitle.value = conversation.title || "Untitled conversation";
+  editTitle.value = (conversation.title || "Untitled conversation").slice(
+    0,
+    conversationTitleMaxLength,
+  );
   renameError.value = "";
   await nextTick();
   const input = document.querySelector<HTMLInputElement>(
@@ -194,10 +300,27 @@ async function confirmConversationDeletion() {
 
 async function send(content = input.value.trim()) {
   if (!content || loading.value) return;
+  if (!(await loadChatCapabilities())) {
+    error.value =
+      "Unable to verify the current chat runtime settings. Try again.";
+    return;
+  }
   if (!activeId.value) await newConversation(false);
   const submittedMode = responseMode.value;
+  const submittedThinking =
+    thinkingMode.value !== null &&
+    chatCapabilities.value?.supported_thinking_modes.includes(
+      thinkingMode.value,
+    )
+      ? thinkingMode.value
+      : null;
+  const submittedWeb = submittedMode === "direct" && webSearch.value;
   const progressSteps =
-    submittedMode === "wiki" ? wikiProgressSteps : directProgressSteps;
+    submittedMode === "wiki"
+      ? wikiProgressSteps
+      : submittedWeb
+        ? directWebProgressSteps
+        : directProgressSteps;
   lastPrompt.value = content;
   input.value = "";
   messages.value.push(
@@ -216,25 +339,44 @@ async function send(content = input.value.trim()) {
   }, 1600);
   await nextTick();
   chatScroll.value?.scrollTo({
-    top: chatScroll.value.scrollHeight,
+    top: chatScroll.value.scrollHeight(),
     behavior: "smooth",
   });
+  const streamStarted = performance.now();
+  let firstDeltaMs: number | null = null;
+  let lastDeltaAt = streamStarted;
+  let deltaCount = 0;
   try {
     await streamMessage(
       activeId.value,
       content,
       submittedMode,
+      submittedThinking,
+      submittedWeb,
       controller.value.signal,
       (delta) => {
+        const receivedAt = performance.now();
+        if (firstDeltaMs === null) firstDeltaMs = receivedAt - streamStarted;
+        lastDeltaAt = receivedAt;
+        deltaCount += 1;
         target.content += delta;
         void nextTick(() =>
           chatScroll.value?.scrollTo({
-            top: chatScroll.value.scrollHeight,
+            top: chatScroll.value.scrollHeight(),
             behavior: "smooth",
           }),
         );
       },
     );
+    await nextTick();
+    const renderedAt = performance.now();
+    console.info("chat_stream_completed", {
+      responseMode: submittedMode,
+      durationMs: Number((renderedAt - streamStarted).toFixed(3)),
+      timeToFirstDeltaMs: roundedTiming(firstDeltaMs),
+      renderAfterLastDeltaMs: Number((renderedAt - lastDeltaAt).toFixed(3)),
+      deltaCount,
+    });
     await workspace.refresh();
     messages.value = await api.listMessages(activeId.value);
   } catch (reason) {
@@ -290,16 +432,19 @@ watch(
   },
   { immediate: true },
 );
+
+void loadChatCapabilities();
 </script>
 
 <template>
   <section
-    class="grid [grid-template-columns:minmax(0,_1fr)_245px] [height:calc(100vh_-_65px)] tablet:[grid-template-columns:1fr] mobile:[height:calc(100vh_-_65px)]"
+    class="grid [grid-template-columns:minmax(0,_1fr)_245px] [height:calc(100vh_-_60px)] tablet:[grid-template-columns:1fr] mobile:[height:calc(100vh_-_60px)]"
   >
     <div
-      class="relative grid [grid-template-rows:auto_1fr_auto] min-w-0 [padding:30px_clamp(22px,_4vw,_60px)_18px] overflow-hidden [&_.page-header]:[margin-bottom:14px] mobile:[padding:26px_14px_14px] mobile:[&_.page-header]:hidden"
+      class="relative grid [grid-template-rows:auto_1fr_auto] min-w-0 [padding:30px_clamp(22px,_4vw,_60px)_8px] overflow-hidden [&_.page-header]:[margin-bottom:14px] mobile:[padding:26px_14px_14px] mobile:[&_.page-header]:hidden"
     >
       <PageHeader
+        class="[&>div:first-child]:min-w-0 [&>div:first-child]:[flex:0_1_820px] [&>div:last-child]:shrink-0"
         eyebrow="Grounded assistant"
         :title="activeConversation?.title || 'AI Chat'"
         description="Ask questions across company knowledge. Every factual answer should lead back to evidence."
@@ -318,9 +463,9 @@ watch(
           </button></template
         >
       </PageHeader>
-      <div
+      <MiniScrollbar
         ref="chatScroll"
-        class="overflow-y-auto [padding:15px_max(0px,_calc((100%_-_840px)_/_2))_28px]"
+        class="min-h-0 [padding:0_max(0px,_calc((100%_-_840px)_/_2))_28px]"
         aria-live="polite"
       >
         <div
@@ -359,7 +504,8 @@ watch(
         </div>
         <template v-for="group in messageGroups" :key="group.key">
           <h3
-            class="sticky top-0 z-[1] my-3 bg-[rgb(255_255_255_/_92%)] py-2 text-center text-caption font-bold text-muted backdrop-blur-sm"
+            v-if="group.label"
+            class="sticky top-0 z-[1] mb-3 mt-[15px] bg-[rgb(255_255_255_/_92%)] pb-2 pt-[8px] text-center text-caption font-bold text-muted backdrop-blur-sm"
           >
             {{ group.label }}
           </h3>
@@ -373,7 +519,7 @@ watch(
             :class="{ 'message-assistant': message.role === 'assistant' }"
           >
             <div
-              class="grid place-items-center [width:28px] [height:28px] text-white [background:#d97855] rounded-action text-fine font-bold [.message-assistant_&]:text-white [.message-assistant_&]:bg-brand [.message-assistant_&]:text-control"
+              class="chat-avatar grid place-items-center [width:28px] [height:28px] rounded-action bg-[#F4A440] text-caption font-bold text-white [.message-assistant_&]:bg-brand [.message-assistant_&]:text-white"
             >
               {{ message.role === "user" ? "FL" : "K" }}
             </div>
@@ -383,15 +529,10 @@ watch(
               >
                 {{ message.role === "user" ? "You" : system.name }}
                 <time
-                  v-if="message.role === 'user' && message.created_at"
+                  v-if="message.created_at"
                   class="ml-2 text-control font-normal text-muted"
                   :datetime="message.created_at"
-                  :title="
-                    new Date(message.created_at).toLocaleString('en', {
-                      dateStyle: 'full',
-                      timeStyle: 'long',
-                    })
-                  "
+                  :title="localDateTimeTitle(message.created_at)"
                   >{{ promptTimeLabel(message.created_at, clock) }}</time
                 >
               </p>
@@ -406,9 +547,15 @@ watch(
               <ChatResponseContent v-else :content="message.content" />
               <div
                 v-if="message.role === 'assistant' && message.content"
-                class="flex flex-wrap [gap:7px] [margin-top:12px] [&_button]:inline-flex [&_button]:[gap:5px] [&_button]:items-center [&_button]:p-0 [&_button]:[color:#71807b] [&_button]:[background:none] [&_button]:border-0 [&_button]:text-caption"
+                class="flex items-center flex-wrap [gap:7px] [margin-top:12px] [&_button]:inline-flex [&_button]:[gap:5px] [&_button]:items-center [&_button]:p-0 [&_button]:[color:#71807b] [&_button]:[background:none] [&_button]:border-0 [&_button]:text-caption"
               >
                 <button
+                  v-if="message === messages[messages.length - 1] && !loading"
+                  type="button"
+                  @click="send(lastPrompt)"
+                >
+                  <RotateCcw :size="14" /> Retry</button
+                ><button
                   type="button"
                   @click="copyMessage(message, message.id || message.content)"
                 >
@@ -420,13 +567,21 @@ watch(
                       ? "Copied"
                       : "Copy"
                   }}</button
-                ><button
-                  v-if="message === messages[messages.length - 1] && !loading"
-                  type="button"
-                  @click="send(lastPrompt)"
-                >
-                  <RotateCcw :size="14" /> Retry
-                </button>
+                ><template v-if="modelLabel(message)">
+                  <span class="text-muted" aria-hidden="true">|</span>
+                  <span class="text-caption text-muted">
+                    {{ modelLabel(message) }}
+                    <template v-if="responseModeLabel(message.execution)">
+                      · {{ responseModeLabel(message.execution) }}
+                    </template>
+                    <template v-if="thinkingLabel(message.execution)">
+                      · {{ thinkingLabel(message.execution) }}
+                    </template>
+                    <template v-if="webLabel(message.execution)">
+                      · {{ webLabel(message.execution) }}
+                    </template>
+                  </span>
+                </template>
               </div>
               <div
                 v-if="sourceDocuments(message.content).length"
@@ -453,7 +608,7 @@ watch(
             Try again
           </button>
         </div>
-      </div>
+      </MiniScrollbar>
       <form
         class="composer grid [width:min(840px,_100%)] [margin:0_auto] [padding:7px] bg-surface [border:1px_solid_#cfd8d3] rounded-composer [box-shadow:0_5px_22px_rgb(35_57_49_/_8%)] [&_textarea]:min-w-0 [&_textarea]:flex-1 [&_textarea]:[max-height:150px] [&_textarea]:[min-height:70px] [&_textarea]:[padding:10px] [&_textarea]:[resize:none] [&_textarea]:[background:transparent] [&_textarea]:border-0 [&_textarea]:outline-none [&_textarea]:text-copy [&_textarea]:[line-height:1.5] [&_textarea]:[vertical-align:middle] [&_textarea:focus]:!shadow-none"
         @submit.prevent="send()"
@@ -485,13 +640,10 @@ watch(
             <Send :size="17" />
           </button>
         </div>
-        <div
-          class="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 pb-1"
-        >
+        <div class="flex min-w-0 flex-wrap items-center gap-2 px-2 pb-1">
           <fieldset
-            class="m-0 flex shrink-0 rounded-control border border-line bg-[#edf1ee] p-[2px]"
+            class="m-0 flex shrink-0 rounded-control border border-line bg-[#edf1ee] p-px"
             aria-label="Response mode"
-            :disabled="loading"
           >
             <legend class="sr-only">Response mode</legend>
             <label
@@ -504,9 +656,10 @@ watch(
                 type="radio"
                 name="response-mode"
                 value="wiki"
+                :disabled="loading"
               />
               <span
-                class="block rounded-[5px] px-2 py-1 [font-size:11px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                class="block rounded-[5px] px-[7px] py-[3px] [font-size:10px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
                 >Wiki</span
               >
             </label>
@@ -520,18 +673,62 @@ watch(
                 type="radio"
                 name="response-mode"
                 value="direct"
+                :disabled="loading"
               />
               <span
-                class="block rounded-[5px] px-2 py-1 [font-size:11px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                class="block rounded-[5px] px-[7px] py-[3px] [font-size:10px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
                 >Direct</span
               >
             </label>
           </fieldset>
-          <p
-            class="m-0 min-w-0 text-right [font-size:11px] text-muted mobile:text-left"
+          <fieldset
+            class="m-0 flex shrink-0 rounded-control border border-line bg-[#edf1ee] p-px"
+            aria-label="Thinking mode"
           >
-            {{ modeHelp }}
-          </p>
+            <legend class="sr-only">Thinking mode</legend>
+            <label
+              v-for="option in thinkingOptions"
+              :key="option"
+              class="cursor-pointer"
+              :title="thinkingOptionTitle(option)"
+            >
+              <input
+                v-model="thinkingMode"
+                class="peer sr-only"
+                type="radio"
+                name="thinking-mode"
+                :value="option"
+                :disabled="
+                  loading ||
+                  !chatCapabilities?.supported_thinking_modes.includes(option)
+                "
+              />
+              <span
+                class="block rounded-[5px] px-[7px] py-[3px] [font-size:10px] font-bold capitalize text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+                >{{ option }}</span
+              >
+            </label>
+          </fieldset>
+          <label
+            class="inline-flex shrink-0 cursor-pointer rounded-control border border-line bg-[#edf1ee] p-px"
+            :title="webHelp"
+          >
+            <input
+              v-model="webSearch"
+              class="peer sr-only"
+              type="checkbox"
+              :disabled="
+                loading ||
+                responseMode === 'wiki' ||
+                !chatCapabilities?.web_search_available
+              "
+            />
+            <span
+              class="inline-flex items-center gap-1 rounded-[5px] px-[7px] py-[3px] [font-size:10px] font-bold text-muted transition-colors peer-checked:bg-brand peer-checked:text-white peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-brand peer-disabled:cursor-not-allowed peer-disabled:opacity-60"
+            >
+              <Globe2 :size="12" /> Web {{ webSearch ? "ON" : "OFF" }}
+            </span>
+          </label>
         </div>
       </form>
       <p
@@ -564,10 +761,16 @@ watch(
               v-model="editTitle"
               :data-rename-id="conversation.id"
               class="min-w-0 self-start rounded-control border border-brand px-2 py-1 text-control outline-none"
-              maxlength="300"
+              :maxlength="conversationTitleMaxLength"
               aria-label="Conversation title"
               @keydown.esc.prevent="cancelRename"
             />
+            <small
+              class="self-end pr-[60px] text-right text-caption text-muted"
+              aria-live="polite"
+            >
+              {{ editTitle.length }}/{{ conversationTitleMaxLength }}
+            </small>
             <small
               v-if="renameError"
               class="self-end pr-[60px] text-body text-danger"
@@ -630,52 +833,18 @@ watch(
         </div>
       </nav>
     </aside>
-    <div
+    <ConfirmActionModal
       v-if="pendingDeletion"
-      class="fixed [inset:0] [z-index:100] grid place-items-center [padding:20px] [background:rgb(12_25_20_/_48%)] [backdrop-filter:blur(3px)]"
-      role="presentation"
-      @click.self="closeDeletionModal"
+      title="Delete conversation?"
+      :description="`Are you sure you want to confirm this action? “${pendingDeletion.title || 'Untitled conversation'}” and all its messages will be permanently deleted.`"
+      confirm-label="Confirm"
+      busy-label="Deleting…"
+      close-label="Close deletion confirmation"
+      :busy="deleting"
+      @close="closeDeletionModal"
+      @confirm="confirmConversationDeletion"
     >
-      <section
-        class="relative [width:min(100%,_460px)] [padding:30px] bg-surface border border-line [border-radius:14px] [box-shadow:0_24px_70px_rgb(15_32_25_/_24%)] [&_h2]:[margin:20px_0_8px] [&_h2]:[font-size:22px] [&_h2]:font-medium [&_p]:m-0 [&_p]:text-muted [&_p]:text-detail [&_p]:[line-height:1.55]"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-conversation-title"
-        aria-describedby="delete-conversation-description"
-        @keydown.esc="closeDeletionModal"
-      >
-        <button
-          class="absolute [top:14px] [right:14px] grid place-items-center [width:32px] [height:32px] text-muted [background:transparent] border-0 rounded-control hover:[background:#f2f4f2]"
-          type="button"
-          aria-label="Close deletion confirmation"
-          :disabled="deleting"
-          @click="closeDeletionModal"
-        >
-          <X :size="18" />
-        </button>
-        <span
-          class="grid place-items-center [width:46px] [height:46px] text-danger [background:#fbece6] rounded-panel"
-          ><CircleQuestionMark :size="23"
-        /></span>
-        <h2 id="delete-conversation-title">Delete conversation?</h2>
-        <p id="delete-conversation-description">
-          Are you sure you want to confirm this action? “{{
-            pendingDeletion.title || "Untitled conversation"
-          }}” and all its messages will be permanently deleted.
-        </p>
-        <div class="flex justify-end [margin-top:26px]">
-          <button
-            class="button inline-flex [gap:8px] items-center justify-center [min-height:38px] [padding:0_15px] [border:1px_solid_transparent] rounded-action text-label font-bold no-underline [transition:0.16s_ease] text-white [background:#a94832] [border-color:#a94832] hover:[opacity:0.84]"
-            type="button"
-            :disabled="deleting"
-            autofocus
-            @click="confirmConversationDeletion"
-          >
-            <Trash2 :size="16" />
-            {{ deleting ? "Deleting…" : "Confirm" }}
-          </button>
-        </div>
-      </section>
-    </div>
+      <template #confirm-icon><Trash2 :size="16" /></template>
+    </ConfirmActionModal>
   </section>
 </template>

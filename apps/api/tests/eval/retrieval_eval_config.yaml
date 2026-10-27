@@ -35,7 +35,7 @@ custom_metrics:
                           calls.append(call["name"])
           allowed = {
               "search_wiki", "read_wiki_page", "list_related_pages",
-              "get_backlinks", "read_source_reference", "analyze_dataset", "search_web"
+              "get_backlinks", "read_source_reference", "analyze_dataset"
           }
           return {"score": 1 if allowed.intersection(calls) else 0, "explanation": str(calls)}
 
@@ -45,7 +45,7 @@ custom_metrics:
           response = instance.get("response") or {}
           text = "".join(part.get("text", "") for part in response.get("parts", []))
           lowered = text.lower()
-          grounded = "wiki/" in lowered and "source" in lowered
+          grounded = all(field in lowered for field in ("wiki path:", "original filename:", "locator:"))
           dataset_grounded = "version" in lowered and "column" in lowered and "source" in lowered
           insufficient = any(word in lowered for word in ("insufficient", "not available", "cannot determine"))
           conflict = "conflict" in lowered and "valletta" in lowered and "milan" in lowered

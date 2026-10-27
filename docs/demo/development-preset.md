@@ -83,6 +83,6 @@ database, and configuration remain intact. The next `start --with-presets` recre
 
 Live answer quality still depends on the selected local model and available hardware. Opening the
 local web interface may require normal macOS browser confirmation. The demo remains usable offline
-after required packages and model assets are present. Public web search stays disabled unless the
-operator starts it with `./knemora start --with-presets --yes-web-search`, and each eligible turn must
-still request external results explicitly.
+after required packages and model assets are present. Public web search starts from
+`KNEMORA_WEB_SEARCH_ENABLED` and may be changed temporarily with the Direct-mode Web control. Wiki
+remains strictly local-only.

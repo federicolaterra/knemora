@@ -11,10 +11,14 @@ checksum. Product renaming never rewrites source bytes or checksum identity.
 
 Generated date/document/version directories remain the storage identity boundary. The original leaf
 uses a readable, portable normalization of the uploaded name while the exact name remains separate
-metadata. Legacy `original.<ext>` leaves migrate idempotently with a checksum-backed journal.
+metadata. Originals remain below `sources/YYYY-MM-DD/<document-id>/<version-id>/`; for example,
+`Relazione tecnica 2026.pdf` is stored as `Relazione_tecnica_2026.pdf`. Legacy `original.<ext>`
+leaves migrate idempotently with a checksum-backed journal and checksum verification, without
+changing source IDs or bytes.
 
 Deleting a document immediately tombstones all its versions and queues durable local cleanup. Active
 source, dataset, Wiki, search, graph, and answer tools exclude tombstoned lineage even if cleanup
 fails. Cleanup preserves shared facts backed by other sources and removes deleted-only evidence,
 derived pages, source directories, and operational source metadata. Retry resumes the persisted
-stage; it does not reactivate the source.
+stage; it does not reactivate the source. Historical conversations and independent backups are not
+rewritten.
