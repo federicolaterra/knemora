@@ -23,6 +23,7 @@
   <img src="https://img.shields.io/badge/100%25-LOCAL%20BY%20DEFAULT-33D133?style=for-the-badge&amp;labelColor=17221F" alt="100% local by default">
   <img src="https://img.shields.io/badge/server-llama.cpp%20%C2%B7%20loopback-33D133?style=for-the-badge&amp;labelColor=17221F" alt="Local llama.cpp inference server">
   <img src="https://img.shields.io/badge/license-MIT-33D133?style=for-the-badge&amp;labelColor=17221F" alt="MIT License">
+  <br>
   <img src="https://img.shields.io/badge/default-Qwen3--8B%20Q3__K__M-2563EB" alt="Default model: Qwen3-8B Q3_K_M">
   <img src="https://img.shields.io/badge/stress%20test-Qwen3.8--27B%20IQ2__S-2563EB" alt="Stress-tested model: Qwen3.8-27B IQ2_S">
   <img src="https://img.shields.io/badge/tested%20on-M1%20Pro%20%C2%B7%2016%20GB-17221F" alt="Tested on Apple M1 Pro with 16 GB unified memory">
@@ -150,90 +151,6 @@ files keep operational data, sources, datasets, and knowledge local.
 
 ![Knemora AI (SI) core architecture](docs/assets/knemora-core-ai-architecture-github.png)
 
-## Updates
-
-Knemora checks the source-controlled official repository's `master` branch as its stable channel;
-GitHub Releases are not required. The first update for an installation created before this feature
-must still be performed manually, followed by `./knemora setup`. Later updates can be checked and
-explicitly installed from either the CLI or the administrator sidebar card.
-
-Checks identify both application version/tag and commit SHA. They may update Git fetch metadata and
-the namespaced `refs/knemora/updates/master` ref, but do not modify application files, install
-dependencies, migrate data, or restart services. Automatic checks run at most once per 24 hours
-after login and can be disabled with `KNEMORA_UPDATE_CHECK_ENABLED=false`. Checks contact GitHub but
-send no documents, prompts, Wiki content, conversations, or private knowledge.
-
-Installation is supported only for a clean macOS Apple Silicon `master` checkout that is behind
-official `master`. Development, custom, detached, dirty, ahead, diverged, and unsupported installs
-remain check-only. The independent updater pins the confirmed SHA, prepares a sibling checkout,
-takes a validated portable backup, retains the prior checkout, runs existing guarded migrations,
-restarts, and verifies readiness. See [Upgrading Knemora](docs/open-source/upgrading.md) for exact
-states, exit codes, journal paths, privacy details, and recovery.
-
-Fresh installations use the embedded database at `~/.knemora/data/knemora.db`; no separate database
-service is required. Supported legacy import guidance remains in the
-[public installation guide](docs/open-source/installation.md#migrating-an-existing-postgresql-installation).
-
-`KNEMORA_HOME` is a stable user-owned application home, independent of checkout and launcher
-technology. `config/home.json` records its versioned compatibility contract; `config/runtime.json`
-tracks rebuildable managed executables separately. Setup adopts recognized older homes without
-moving their database, Wiki, sources, datasets, models, configuration, or IDs. Unknown, corrupt, or
-newer homes are refused before writes with recovery guidance. Future executable or desktop hosts
-must reuse this home and the existing core/migration services rather than creating a second data
-root. See
-[Application data and lifecycle](docs/open-source/installation.md#application-data-and-lifecycle).
-
-Originals remain isolated below `sources/YYYY-MM-DD/<document-id>/<version-id>/`, but their leaf
-names are recognizable: for example, `Relazione tecnica 2026.pdf` is stored as
-`Relazione_tecnica_2026.pdf`. The exact uploaded name remains display/provenance metadata. Legacy
-`original.<ext>` files are checksum-verified and renamed through a restart-safe migration without
-changing source IDs or bytes.
-
-Deleting a source in **Documents** covers every version of that document. Acceptance immediately
-excludes it from downloads, datasets, search, graph, Wiki retrieval, and new answers, then a durable
-local job removes its citations/unsupported generated knowledge, rebuilds projections, purges the
-version directories, and cleans relational metadata. Shared claims keep independently supported
-citations. Failed jobs remain excluded and can be retried from the Documents status UI. Historical
-conversations and independent backups are not rewritten.
-
-## Workspace lists and conversation history
-
-Workspace browsing uses bounded server-side lists: Documents and Ingestion show 10 records per
-page, Knowledge shows 8, and the Available datasets panel shows 5. Overview requests only the five
-newest active sources. Search and filters are applied before authorized counts and pagination, and
-the shared pager displays fixed groups of at most five numbered pages with one-page Prev/Next
-navigation.
-
-AI (SI) Chat keeps the eight most recently active conversations in its existing aside. **View all** opens
-the authenticated `/chat/conversations` history table with server-side title search and 15 records
-per page. Conversation titles can be renamed inline; otherwise the first persisted user prompt
-provides a deterministic title without an external model call. Persisted timestamps are stored as
-unambiguous UTC instants and rendered in the browser timezone. A date separator appears only after
-a persisted assistant response establishes that response's local calendar day, so an optimistic
-prompt never creates an empty or premature day group.
-
-## Wiki / Direct Chat Modes
-
-The composer includes a per-turn **Wiki / Direct** selector. **Wiki** is the default for new,
-opened, reloaded, and legacy conversations. It keeps the existing intent-aware experience:
-organization-specific questions use authorized Wiki/source retrieval and exact provenance, while
-ordinary conversation and bounded arithmetic keep their existing non-retrieval routes.
-
-**Direct** sends the turn through the same Google ADK root agent, provider-neutral `LLMProvider`,
-llama.cpp runtime, and selected local model with all Wiki, source, dataset, and graph tools
-withheld. It can use visible conversation text for continuity but does not freshly verify private
-knowledge or produce new source grounding. Public search is a separate, Direct-only one-message
-option described below. Changing modes never changes earlier messages or citations, and no speed
-improvement is implied.
-
-The matching compact **Fast / Deep** selector is also per request. Fast requests template thinking
-off; Deep requests it on only when the selected model/runtime capability is verified. The curated
-Qwen3 8B and Gemma 4 E4B entries both expose Fast and Deep; unsupported or unverified modes are
-disabled or rejected rather than mislabelled. These controls do not reload
-the model, change context size, persist hidden reasoning, or alter knowledge compilation. Each
-assistant footer reports server-confirmed model and execution metadata. See
-[AI (SI) Chat modes](docs/open-source/chat.md) for API, privacy, history, and switching details.
-
 ## Portable backups
 
 Full backups default to `~/Documents/Knemora/Backups/` and include a consistent SQLite snapshot,
@@ -349,59 +266,6 @@ fenced or inline code, images, attachments, and external URLs are ignored. Ambig
 page links are counted without creating fake nodes. If WebGL is unavailable, Knemora presents an
 accessible searchable page list with the same native detail navigation.
 
-## Explicit public web search
-
-Chat remains private/local by default because `KNEMORA_WEB_SEARCH_ENABLED=false` is the shipped
-startup default. In **Direct**, the user may switch **Web** ON or OFF without another launcher flag
-or restart. The choice is a temporary browser-session preference retained across messages until it
-is changed, the page is reloaded, or the backend runtime restarts. Wiki always presents Web OFF and
-the backend rejects every Wiki+Web request before network access.
-
-Each accepted Direct+Web turn makes exactly one bounded initial DDGS/DuckDuckGo attempt. Its query
-is derived only from the current message; requests containing URLs,
-email addresses, credential-like text, UUIDs, or references to private documents, Wiki/history, or
-prior answers fail closed. No classifier can guarantee sensitivity detection, so users should keep
-private text out of public queries.
-
-Only that bounded query leaves the machine. Private Wiki pages, source records, prior answers,
-conversation history, credentials, and internal IDs are never used to construct it. External
-titles and snippets are untrusted prompt data, are not Wiki evidence, and use only returned safe
-HTTP(S) URLs. Timeout, error, and zero-result outcomes are disclosed and persisted as metadata;
-raw results are not stored in message metadata.
-
-Public search uses DDGS with a DuckDuckGo backend and requires network access.
-`KNEMORA_WEB_SEARCH_ENABLED` sets the initial Direct Web state at startup; `./knemora start` and
-`./knemora start --with-presets` re-read it from `.env`. Result and timeout bounds are controlled by
-`KNEMORA_WEB_SEARCH_MAX_RESULTS` and `KNEMORA_WEB_SEARCH_TIMEOUT_SECONDS`.
-
-## Google ADK developer playground
-
-After Knemora and its local model server are running, launch the optional official ADK Web UI in a
-separate terminal:
-
-```bash
-./knemora --dev adk-web
-```
-
-The command imports the existing `knowledge_agent` from the locked `apps/api/.venv`; it does not
-create another agent. It binds only to `127.0.0.1`, prints the selected URL, and runs in the
-foreground until Ctrl+C. The expected URL is `http://localhost:8080` when port 8080 is free and is
-not configured for another Knemora service. Otherwise the launcher selects an available port in
-8080–8090. If that listener is already a Knemora ADK Web instance, the command reports its URL
-instead of starting a duplicate; other listeners are never stopped or replaced.
-
-Use the playground's own chat to inspect its Events and Trace views. Requests sent through the
-normal Knemora UI use a separate FastAPI/ADK execution path and do not automatically appear there.
-The playground is a local, unauthenticated development server and is never started by normal
-`./knemora start`. It reads the same `.env` startup defaults as the application.
-
-To reclaim only the preset files and their isolated database, run `./knemora delete --presets` and
-confirm the prompt (or use `./knemora --yes delete --presets`). The downloaded model, normal Wiki,
-normal sources, and normal database are preserved.
-
-The former `start-with-presets` and `delete-presets` spellings remain deprecated compatibility
-aliases. They print the corresponding canonical command and route through the same implementation.
-
 ## Uninstall
 
 Uninstall always requires an explicit `y` or `yes` response in an interactive terminal. Before
@@ -465,7 +329,11 @@ KNEMORA_SKIP_LLM=1 make app-start
 
 - [Installation](docs/open-source/installation.md)
 - [Architecture](docs/open-source/architecture.md)
-- [AI (SI) Chat modes](docs/open-source/chat.md)
+- [Updates](docs/open-source/upgrading.md#managed-updates-from-the-stable-channel)
+- [Workspace lists and conversation history](docs/open-source/workspace-lists-and-conversation-history.md)
+- [Wiki / Direct Chat Modes](docs/open-source/chat.md#wiki--direct-chat-modes)
+- [Explicit public web search](docs/open-source/chat.md#explicit-public-web-search)
+- [Google ADK developer playground](docs/open-source/installation.md#google-adk-developer-playground)
 - [Local inference](docs/open-source/local-inference.md)
 - [Ingestion and provenance](docs/open-source/ingestion.md)
 - [Knowledge Engine](docs/open-source/knowledge-engine.md)

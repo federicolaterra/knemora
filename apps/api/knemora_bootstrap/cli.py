@@ -53,8 +53,14 @@ BANNER = r"""Welcome to
 | . \| | | |  __/ | | | | | (_) | | | (_| |
 |_|\_\_| |_|\___|_| |_| |_|\___/|_|  \__,_|
 
-Local-first knowledge and agents with a native Second Brain
+Open-source, Local-first AI (SI) Second Brain
 """
+
+
+def _should_show_banner(command: str | None, *, interactive: bool) -> bool:
+    return (
+        interactive and command in {None, "start"} and os.environ.get("KNEMORA_BANNER_SHOWN") != "1"
+    )
 
 
 class StartupProgress:
@@ -818,7 +824,7 @@ def main(argv: list[str] | None = None) -> int:
     paths = AppPaths.discover()
     platform = detect_platform()
     interactive = sys.stdin.isatty() and sys.stdout.isatty() and not args.non_interactive
-    if interactive and os.environ.get("KNEMORA_BANNER_SHOWN") != "1":
+    if _should_show_banner(args.command, interactive=interactive):
         print(BANNER)
     command = args.command
     wizard_approved = False

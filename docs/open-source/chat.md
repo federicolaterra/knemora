@@ -1,5 +1,7 @@
 # AI (SI) Chat modes
 
+## Wiki / Direct Chat Modes
+
 AI (SI) Chat uses the selected local model through the existing Google ADK root agent and the
 provider-neutral `LLMProvider`. The composer selects the response policy for one submitted turn:
 
@@ -51,7 +53,7 @@ records the actual response mode and provider model ID, configured display name/
 thinking mode/capability, and Web requested/attempted/succeeded/outcome fields. The footer renders
 the server-confirmed model first; it never derives historical badges from current controls.
 
-## Direct-only public web search
+## Explicit public web search
 
 `KNEMORA_WEB_SEARCH_ENABLED` is the startup default for the **Web** control, not an operator lock.
 Direct may turn Web ON or OFF without a launcher flag or restart. That temporary preference is
@@ -68,6 +70,11 @@ restriction, not a perfect sensitivity classifier. Prior messages and private to
 never serialized to the search backend. Returned titles/snippets are bounded untrusted data, not
 instructions or Wiki evidence. The UI and stored metadata distinguish success, no results, and
 errors; raw result text is not persisted as execution metadata.
+
+Public search requires network access. `./knemora start` and
+`./knemora start --with-presets` re-read the startup default from `.env`. The result and timeout
+bounds are controlled by `KNEMORA_WEB_SEARCH_MAX_RESULTS` and
+`KNEMORA_WEB_SEARCH_TIMEOUT_SECONDS`.
 
 ## API
 

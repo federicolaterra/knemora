@@ -34,6 +34,11 @@ and established interfaces.
 
 ### Changed
 
+- The CLI welcome banner restores the original **Open-source, Local-first AI (SI) Second Brain**
+  tagline and appears only for `./knemora` and `./knemora start`; focused maintenance commands no
+  longer print it. The root README now links detailed updates, workspace/history, chat modes,
+  public-search, and ADK playground guidance from its Documentation list instead of embedding those
+  long sections.
 - Fast/Deep and Direct Web controls now behave as temporary browser-session overrides. Environment
   values are startup defaults, ordinary `./knemora start` is sufficient, Wiki stays no-Web, and a
   new backend runtime identity resets stale UI overrides to freshly read defaults.

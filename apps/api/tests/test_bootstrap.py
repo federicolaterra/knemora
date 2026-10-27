@@ -28,12 +28,14 @@ from knemora_bootstrap.adk_web import (
     launch_adk_web,
 )
 from knemora_bootstrap.cli import (
+    BANNER,
     SetupManager,
     StartupProgress,
     _delete_presets,
     _parser,
     _preset_files_available,
     _run_setup_command,
+    _should_show_banner,
     _virtual_environment_was_relocated,
     main,
 )
@@ -421,6 +423,18 @@ def test_root_help_hides_deprecated_preset_aliases() -> None:
     assert "delete-presets" not in help_text
     assert "start               start the normal local environment" in help_text
     assert "delete              delete an explicitly selected Knemora target" in help_text
+
+
+def test_banner_copy_and_command_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert BANNER.endswith("Open-source, Local-first AI (SI) Second Brain\n")
+    assert _should_show_banner(_parser().parse_args([]).command, interactive=True)
+    assert _should_show_banner(_parser().parse_args(["start"]).command, interactive=True)
+    for command in ("setup", "status", "stop", "doctor", "models", "backup"):
+        assert not _should_show_banner(_parser().parse_args([command]).command, interactive=True)
+    assert not _should_show_banner(None, interactive=False)
+    monkeypatch.setenv("KNEMORA_BANNER_SHOWN", "1")
+    assert not _should_show_banner(None, interactive=True)
+    assert not _should_show_banner("start", interactive=True)
 
 
 def _uninstall_repository(path: Path) -> None:

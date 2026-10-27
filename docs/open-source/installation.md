@@ -211,21 +211,26 @@ restricted current-message query to the external provider. Wiki can never search
 Set `KNEMORA_WEB_SEARCH_ENABLED=true` to start Direct sessions ON. Ordinary `./knemora start`
 re-reads `.env`, and a backend restart causes mounted clients to discard stale overrides.
 
-## Optional ADK developer playground
+## Google ADK developer playground
 
 With the configured local model server running, developers may start the official Google ADK Web
-interface without changing the normal product runtime:
+interface in a separate terminal without changing the normal product runtime:
 
 ```bash
 ./knemora --dev adk-web
 ```
 
-It imports Knemora's existing `knowledge_agent` through `apps/api/.venv`, binds to `127.0.0.1`,
-and prints its actual URL. The launcher prefers a free, unreserved port 8080, otherwise scans
-through 8090; it reports an existing Knemora ADK Web URL on repeated launch and never stops another
-listener. Use its own chat for Events and Trace, because normal Knemora UI requests do not
-automatically enter this separate development server. Stop it with Ctrl+C. Do not expose it to an
-untrusted network; normal `./knemora start` never launches it.
+It imports Knemora's existing `knowledge_agent` through the locked `apps/api/.venv` and does not
+create another agent. It binds to `127.0.0.1`, prints its actual URL, and runs in the foreground.
+The launcher prefers a free, unreserved port 8080, otherwise scans through 8090; it reports an
+existing Knemora ADK Web URL on repeated launch and never stops or replaces another listener. Use
+its own chat for Events and Trace, because normal Knemora UI requests do not automatically enter
+this separate development server. It reads the same `.env` startup defaults as the application.
+Stop it with Ctrl+C. Do not expose this local, unauthenticated server to an untrusted network;
+normal `./knemora start` never launches it.
+
+The former `start-with-presets` and `delete-presets` spellings remain deprecated compatibility
+aliases. They print the corresponding canonical command and route through the same implementation.
 
 ## Manual fallback
 
