@@ -4,10 +4,13 @@ import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { api } from "../api/client";
+import ConfirmActionModal from "../components/ConfirmActionModal.vue";
 import PageHeader from "../components/PageHeader.vue";
 import PaginationControls from "../components/PaginationControls.vue";
 import { useWorkspaceStore } from "../stores/workspace";
 import type { Conversation } from "../types";
+
+const conversationTitleMaxLength = 74;
 
 const route = useRoute();
 const router = useRouter();
@@ -19,6 +22,7 @@ const total = ref(0);
 const totalPages = ref(0);
 const loading = ref(false);
 const deleting = ref("");
+const pendingDeletion = ref<Conversation | null>(null);
 const editingId = ref("");
 const editTitle = ref("");
 const renaming = ref(false);
@@ -75,7 +79,10 @@ onBeforeUnmount(() => clearTimeout(searchTimer));
 
 async function beginRename(conversation: Conversation) {
   editingId.value = conversation.id;
-  editTitle.value = conversation.title || "Untitled conversation";
+  editTitle.value = (conversation.title || "Untitled conversation").slice(
+    0,
+    conversationTitleMaxLength,
+  );
   renameError.value = "";
   await nextTick();
   const input = document.querySelector<HTMLInputElement>(
@@ -127,13 +134,17 @@ async function saveRename(conversation: Conversation) {
   }
 }
 
-async function deleteConversation(conversation: Conversation) {
-  if (
-    !window.confirm(
-      `Delete “${conversation.title || "Untitled conversation"}” and all its messages?`,
-    )
-  )
-    return;
+function requestConversationDeletion(conversation: Conversation) {
+  pendingDeletion.value = conversation;
+}
+
+function closeDeletionModal() {
+  if (!deleting.value) pendingDeletion.value = null;
+}
+
+async function confirmConversationDeletion() {
+  const conversation = pendingDeletion.value;
+  if (!conversation || deleting.value) return;
   deleting.value = conversation.id;
   error.value = "";
   try {
@@ -144,6 +155,7 @@ async function deleteConversation(conversation: Conversation) {
         ? Math.max(1, page.value - 1)
         : page.value,
     );
+    pendingDeletion.value = null;
   } catch (reason) {
     error.value =
       reason instanceof Error
@@ -175,7 +187,7 @@ function formatDate(value?: string | null) {
     >
       <template #actions
         ><RouterLink
-          class="inline-flex items-center gap-2 text-brand no-underline"
+          class="inline-flex items-center gap-2 text-body text-brand no-underline"
           to="/chat"
           ><ArrowLeft :size="16" /> Back to AI Chat</RouterLink
         ></template
@@ -247,11 +259,17 @@ function formatDate(value?: string | null) {
                     v-model="editTitle"
                     :data-history-rename-id="conversation.id"
                     class="w-full max-w-[360px] rounded-control border border-brand px-2 py-1 text-control outline-none"
-                    maxlength="300"
+                    :maxlength="conversationTitleMaxLength"
                     aria-label="Conversation title"
                     @keydown.enter.prevent="saveRename(conversation)"
                     @keydown.esc.prevent="cancelRename"
                   />
+                  <small
+                    class="mt-1 block max-w-[360px] text-right text-caption text-muted"
+                    aria-live="polite"
+                  >
+                    {{ editTitle.length }}/{{ conversationTitleMaxLength }}
+                  </small>
                   <small v-if="renameError" class="mt-1 block text-danger">{{
                     renameError
                   }}</small>
@@ -317,7 +335,7 @@ function formatDate(value?: string | null) {
                   :disabled="deleting === conversation.id"
                   :aria-label="`Delete ${conversation.title || 'conversation'}`"
                   title="Delete conversation"
-                  @click="deleteConversation(conversation)"
+                  @click="requestConversationDeletion(conversation)"
                 >
                   <Trash2 :size="17" />
                 </button>
@@ -335,5 +353,18 @@ function formatDate(value?: string | null) {
         @change="loadPage"
       />
     </section>
+    <ConfirmActionModal
+      v-if="pendingDeletion"
+      title="Delete conversation?"
+      :description="`Are you sure you want to confirm this action? “${pendingDeletion.title || 'Untitled conversation'}” and all its messages will be permanently deleted.`"
+      confirm-label="Confirm"
+      busy-label="Deleting…"
+      close-label="Close deletion confirmation"
+      :busy="Boolean(deleting)"
+      @close="closeDeletionModal"
+      @confirm="confirmConversationDeletion"
+    >
+      <template #confirm-icon><Trash2 :size="16" /></template>
+    </ConfirmActionModal>
   </section>
 </template>

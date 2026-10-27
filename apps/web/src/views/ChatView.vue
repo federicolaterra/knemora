@@ -2,7 +2,6 @@
 import { useTextareaAutosize } from "@vueuse/core";
 import {
   Check,
-  CircleQuestionMark,
   Clipboard,
   Globe2,
   ArrowRight,
@@ -20,6 +19,8 @@ import { useRoute, useRouter } from "vue-router";
 
 import { api, openOriginalSource, streamMessage } from "../api/client";
 import ChatResponseContent from "../components/ChatResponseContent.vue";
+import ConfirmActionModal from "../components/ConfirmActionModal.vue";
+import MiniScrollbar from "../components/MiniScrollbar.vue";
 import PageHeader from "../components/PageHeader.vue";
 import { useSystemStore } from "../stores/system";
 import { useWorkspaceStore } from "../stores/workspace";
@@ -36,6 +37,13 @@ import {
   localDateTimeTitle,
   promptTimeLabel,
 } from "../utils/chatDates";
+
+const conversationTitleMaxLength = 74;
+type MiniScrollToOptions = {
+  top?: number;
+  left?: number;
+  behavior?: "auto" | "instant" | "smooth";
+};
 
 const route = useRoute();
 const router = useRouter();
@@ -58,7 +66,10 @@ const clock = ref(new Date());
 const clockTimer = window.setInterval(() => {
   clock.value = new Date();
 }, 30_000);
-const chatScroll = ref<HTMLElement>();
+const chatScroll = ref<{
+  scrollHeight: () => number;
+  scrollTo: (options: MiniScrollToOptions) => void;
+}>();
 const { textarea, input } = useTextareaAutosize({ styleProp: "height" });
 // The template resolves this ref by name; keep an explicit script read for static analysis.
 void textarea;
@@ -203,7 +214,10 @@ async function newConversation(resetMode = true) {
 
 async function beginRename(conversation: Conversation) {
   editingId.value = conversation.id;
-  editTitle.value = conversation.title || "Untitled conversation";
+  editTitle.value = (conversation.title || "Untitled conversation").slice(
+    0,
+    conversationTitleMaxLength,
+  );
   renameError.value = "";
   await nextTick();
   const input = document.querySelector<HTMLInputElement>(
@@ -325,7 +339,7 @@ async function send(content = input.value.trim()) {
   }, 1600);
   await nextTick();
   chatScroll.value?.scrollTo({
-    top: chatScroll.value.scrollHeight,
+    top: chatScroll.value.scrollHeight(),
     behavior: "smooth",
   });
   const streamStarted = performance.now();
@@ -348,7 +362,7 @@ async function send(content = input.value.trim()) {
         target.content += delta;
         void nextTick(() =>
           chatScroll.value?.scrollTo({
-            top: chatScroll.value.scrollHeight,
+            top: chatScroll.value.scrollHeight(),
             behavior: "smooth",
           }),
         );
@@ -424,12 +438,13 @@ void loadChatCapabilities();
 
 <template>
   <section
-    class="grid [grid-template-columns:minmax(0,_1fr)_245px] [height:calc(100vh_-_65px)] tablet:[grid-template-columns:1fr] mobile:[height:calc(100vh_-_65px)]"
+    class="grid [grid-template-columns:minmax(0,_1fr)_245px] [height:calc(100vh_-_60px)] tablet:[grid-template-columns:1fr] mobile:[height:calc(100vh_-_60px)]"
   >
     <div
-      class="relative grid [grid-template-rows:auto_1fr_auto] min-w-0 [padding:30px_clamp(22px,_4vw,_60px)_18px] overflow-hidden [&_.page-header]:[margin-bottom:14px] mobile:[padding:26px_14px_14px] mobile:[&_.page-header]:hidden"
+      class="relative grid [grid-template-rows:auto_1fr_auto] min-w-0 [padding:30px_clamp(22px,_4vw,_60px)_8px] overflow-hidden [&_.page-header]:[margin-bottom:14px] mobile:[padding:26px_14px_14px] mobile:[&_.page-header]:hidden"
     >
       <PageHeader
+        class="[&>div:first-child]:min-w-0 [&>div:first-child]:[flex:0_1_820px] [&>div:last-child]:shrink-0"
         eyebrow="Grounded assistant"
         :title="activeConversation?.title || 'AI Chat'"
         description="Ask questions across company knowledge. Every factual answer should lead back to evidence."
@@ -448,9 +463,9 @@ void loadChatCapabilities();
           </button></template
         >
       </PageHeader>
-      <div
+      <MiniScrollbar
         ref="chatScroll"
-        class="overflow-y-auto [padding:15px_max(0px,_calc((100%_-_840px)_/_2))_28px]"
+        class="min-h-0 [padding:0_max(0px,_calc((100%_-_840px)_/_2))_28px]"
         aria-live="polite"
       >
         <div
@@ -490,7 +505,7 @@ void loadChatCapabilities();
         <template v-for="group in messageGroups" :key="group.key">
           <h3
             v-if="group.label"
-            class="sticky top-0 z-[1] my-3 bg-[rgb(255_255_255_/_92%)] py-2 text-center text-caption font-bold text-muted backdrop-blur-sm"
+            class="sticky top-0 z-[1] mb-3 mt-[15px] bg-[rgb(255_255_255_/_92%)] pb-2 pt-[8px] text-center text-caption font-bold text-muted backdrop-blur-sm"
           >
             {{ group.label }}
           </h3>
@@ -504,7 +519,7 @@ void loadChatCapabilities();
             :class="{ 'message-assistant': message.role === 'assistant' }"
           >
             <div
-              class="grid place-items-center [width:28px] [height:28px] text-white [background:#d97855] rounded-action text-fine font-bold [.message-assistant_&]:text-white [.message-assistant_&]:bg-brand [.message-assistant_&]:text-control"
+              class="chat-avatar grid place-items-center [width:28px] [height:28px] rounded-action bg-[#F4A440] text-caption font-bold text-white [.message-assistant_&]:bg-brand [.message-assistant_&]:text-white"
             >
               {{ message.role === "user" ? "FL" : "K" }}
             </div>
@@ -593,7 +608,7 @@ void loadChatCapabilities();
             Try again
           </button>
         </div>
-      </div>
+      </MiniScrollbar>
       <form
         class="composer grid [width:min(840px,_100%)] [margin:0_auto] [padding:7px] bg-surface [border:1px_solid_#cfd8d3] rounded-composer [box-shadow:0_5px_22px_rgb(35_57_49_/_8%)] [&_textarea]:min-w-0 [&_textarea]:flex-1 [&_textarea]:[max-height:150px] [&_textarea]:[min-height:70px] [&_textarea]:[padding:10px] [&_textarea]:[resize:none] [&_textarea]:[background:transparent] [&_textarea]:border-0 [&_textarea]:outline-none [&_textarea]:text-copy [&_textarea]:[line-height:1.5] [&_textarea]:[vertical-align:middle] [&_textarea:focus]:!shadow-none"
         @submit.prevent="send()"
@@ -746,10 +761,16 @@ void loadChatCapabilities();
               v-model="editTitle"
               :data-rename-id="conversation.id"
               class="min-w-0 self-start rounded-control border border-brand px-2 py-1 text-control outline-none"
-              maxlength="300"
+              :maxlength="conversationTitleMaxLength"
               aria-label="Conversation title"
               @keydown.esc.prevent="cancelRename"
             />
+            <small
+              class="self-end pr-[60px] text-right text-caption text-muted"
+              aria-live="polite"
+            >
+              {{ editTitle.length }}/{{ conversationTitleMaxLength }}
+            </small>
             <small
               v-if="renameError"
               class="self-end pr-[60px] text-body text-danger"
@@ -812,52 +833,18 @@ void loadChatCapabilities();
         </div>
       </nav>
     </aside>
-    <div
+    <ConfirmActionModal
       v-if="pendingDeletion"
-      class="fixed [inset:0] [z-index:100] grid place-items-center [padding:20px] [background:rgb(12_25_20_/_48%)] [backdrop-filter:blur(3px)]"
-      role="presentation"
-      @click.self="closeDeletionModal"
+      title="Delete conversation?"
+      :description="`Are you sure you want to confirm this action? “${pendingDeletion.title || 'Untitled conversation'}” and all its messages will be permanently deleted.`"
+      confirm-label="Confirm"
+      busy-label="Deleting…"
+      close-label="Close deletion confirmation"
+      :busy="deleting"
+      @close="closeDeletionModal"
+      @confirm="confirmConversationDeletion"
     >
-      <section
-        class="relative [width:min(100%,_460px)] [padding:30px] bg-surface border border-line [border-radius:14px] [box-shadow:0_24px_70px_rgb(15_32_25_/_24%)] [&_h2]:[margin:20px_0_8px] [&_h2]:[font-size:22px] [&_h2]:font-medium [&_p]:m-0 [&_p]:text-muted [&_p]:text-detail [&_p]:[line-height:1.55]"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-conversation-title"
-        aria-describedby="delete-conversation-description"
-        @keydown.esc="closeDeletionModal"
-      >
-        <button
-          class="absolute [top:14px] [right:14px] grid place-items-center [width:32px] [height:32px] text-muted [background:transparent] border-0 rounded-control hover:[background:#f2f4f2]"
-          type="button"
-          aria-label="Close deletion confirmation"
-          :disabled="deleting"
-          @click="closeDeletionModal"
-        >
-          <X :size="18" />
-        </button>
-        <span
-          class="grid place-items-center [width:46px] [height:46px] text-danger [background:#fbece6] rounded-panel"
-          ><CircleQuestionMark :size="23"
-        /></span>
-        <h2 id="delete-conversation-title">Delete conversation?</h2>
-        <p id="delete-conversation-description">
-          Are you sure you want to confirm this action? “{{
-            pendingDeletion.title || "Untitled conversation"
-          }}” and all its messages will be permanently deleted.
-        </p>
-        <div class="flex justify-end [margin-top:26px]">
-          <button
-            class="button inline-flex [gap:8px] items-center justify-center [min-height:38px] [padding:0_15px] [border:1px_solid_transparent] rounded-action text-label font-bold no-underline [transition:0.16s_ease] text-white [background:#a94832] [border-color:#a94832] hover:[opacity:0.84]"
-            type="button"
-            :disabled="deleting"
-            autofocus
-            @click="confirmConversationDeletion"
-          >
-            <Trash2 :size="16" />
-            {{ deleting ? "Deleting…" : "Confirm" }}
-          </button>
-        </div>
-      </section>
-    </div>
+      <template #confirm-icon><Trash2 :size="16" /></template>
+    </ConfirmActionModal>
   </section>
 </template>

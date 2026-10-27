@@ -121,7 +121,7 @@ class ChatRepository:
                 ),
                 ~has_messages,
             )
-            .values(title=normalized[:300])
+            .values(title=normalized[:74])
             .execution_options(synchronize_session=False)
         )
         self._session.flush()

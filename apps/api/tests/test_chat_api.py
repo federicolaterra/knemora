@@ -1085,6 +1085,16 @@ def test_conversation_titles_rename_search_and_pagination() -> None:
             invalid_control = await client.patch(
                 f"/api/v1/conversations/{conversation_id}", json={"title": "Bad\u0007title"}
             )
+            invalid_long = await client.patch(
+                f"/api/v1/conversations/{conversation_id}", json={"title": "x" * 75}
+            )
+            auto_titled = await client.post("/api/v1/conversations", json={})
+            auto_titled_id = auto_titled.json()["id"]
+            await client.post(
+                f"/api/v1/conversations/{auto_titled_id}/messages",
+                json={"content": "A" * 100},
+            )
+            auto_titled_detail = await client.get(f"/api/v1/conversations/{auto_titled_id}")
             for index in range(16):
                 await client.post("/api/v1/conversations", json={"title": f"History {index:02}"})
             recent = await client.get("/api/v1/conversations")
@@ -1099,9 +1109,11 @@ def test_conversation_titles_rename_search_and_pagination() -> None:
         assert preserved.json()["title"] == "Roadmap 🚀"
         assert invalid_empty.status_code == 422
         assert invalid_control.status_code == 422
+        assert invalid_long.status_code == 422
+        assert auto_titled_detail.json()["title"] == "A" * 74
         assert len(recent.json()) == 8
         assert page.json()["page_limit"] == 15
-        assert page.json()["total"] == 17
+        assert page.json()["total"] == 18
         assert len(page.json()["items"]) == 15
         assert searched.json()["total"] == 1
         assert messages.json()[0]["created_at"].endswith("+00:00")

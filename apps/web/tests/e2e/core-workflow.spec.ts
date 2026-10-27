@@ -108,6 +108,8 @@ test.beforeEach(async ({ page }) => {
             "chat.use",
             "document.read",
             "document.upload",
+            "document.reprocess",
+            "document.delete",
             "ingestion.read",
             "knowledge.read",
             "dataset.analyze",
@@ -130,6 +132,31 @@ test.beforeEach(async ({ page }) => {
               total_pages: 1,
             }
           : [documentRecord],
+      });
+    if (path === "/api/v1/source-deletion-operations")
+      return route.fulfill({ json: [] });
+    if (
+      path === "/api/v1/ingestion-jobs/job-1/reprocess" &&
+      route.request().method() === "POST"
+    )
+      return route.fulfill({ json: { status: "READY_FOR_COMPILATION" } });
+    if (
+      path === "/api/v1/document-versions/version-1/compile" &&
+      route.request().method() === "POST"
+    )
+      return route.fulfill({ json: { status: "COMPLETED" } });
+    if (
+      path === "/api/v1/documents/doc-1" &&
+      route.request().method() === "DELETE"
+    )
+      return route.fulfill({
+        json: {
+          id: "delete-1",
+          document_id: "doc-1",
+          status: "PENDING",
+          stage: "PENDING",
+          display_filename: "distribution.csv",
+        },
       });
     if (path === "/api/v1/wiki/pages") return route.fulfill({ json: [] });
     if (path === "/api/v1/wiki/page-index")
@@ -473,6 +500,10 @@ test("navigates the complete product workflow", async ({ page }, testInfo) => {
   await expect(page.locator(".orbit-dot")).toHaveCSS("width", "12px");
   await expect(page.locator(".orbit-dot")).toHaveCSS("height", "12px");
   await expect(page.locator(".orbit-dot")).toHaveCSS(
+    "background-color",
+    "rgb(244, 164, 64)",
+  );
+  await expect(page.locator(".orbit-dot")).toHaveCSS(
     "animation-name",
     "knowledge-orbit",
   );
@@ -546,6 +577,28 @@ test("navigates the complete product workflow", async ({ page }, testInfo) => {
     path: testInfo.outputPath("documents.png"),
     animations: "disabled",
   });
+  await page.getByTitle("Reprocess source").click();
+  const reprocessDialog = page.getByRole("dialog", {
+    name: "Reprocess source?",
+  });
+  await expect(reprocessDialog).toBeVisible();
+  await expect(reprocessDialog.locator("span").first()).toHaveCSS(
+    "color",
+    "rgb(244, 164, 64)",
+  );
+  await reprocessDialog
+    .getByRole("button", { name: "Reprocess", exact: true })
+    .click();
+  await expect(reprocessDialog).toBeHidden();
+  await page.getByTitle("Delete source and update knowledge").click();
+  const deleteSourceDialog = page.getByRole("dialog", {
+    name: "Delete source?",
+  });
+  await expect(deleteSourceDialog).toBeVisible();
+  await deleteSourceDialog
+    .getByRole("button", { name: "Confirm", exact: true })
+    .click();
+  await expect(deleteSourceDialog).toBeHidden();
   const documentSearch = page.getByPlaceholder("Search files…");
   await documentSearch.focus();
   await expect(documentSearch).toHaveCSS(
@@ -819,6 +872,7 @@ test("navigates the complete product workflow", async ({ page }, testInfo) => {
   await expect(
     page.getByRole("textbox", { name: "Message", exact: true }),
   ).toHaveCSS("font-size", "15px");
+  await expect(page.locator(".os-scrollbar-vertical").first()).toBeAttached();
   await expect(
     page.getByText("What would you like to understand?"),
   ).toBeVisible();
@@ -843,10 +897,19 @@ test("navigates the complete product workflow", async ({ page }, testInfo) => {
     page.getByRole("dialog", { name: "Delete conversation?" }),
   ).toBeHidden();
   await page.getByRole("link", { name: "View all", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Back to AI Chat" })).toHaveCSS(
+    "font-size",
+    "14px",
+  );
   await expect(page.getByText("1 conversations · 15 per page")).toHaveCSS(
     "font-size",
     "12px",
   );
+  await page.getByTitle("Rename conversation").click();
+  await expect(
+    page.getByRole("textbox", { name: "Conversation title", exact: true }),
+  ).toHaveAttribute("maxlength", "74");
+  await expect(page.getByText("15/74", { exact: true })).toBeVisible();
   await page.getByRole("link", { name: "Analytics", exact: true }).click();
   await expect(
     page.getByText(
@@ -1246,6 +1309,10 @@ test("keeps Wiki and Direct modes accessible and clear of the composer", async (
   await expect(
     page.getByText("Fake Local · Direct · Deep · Web ON"),
   ).toBeVisible();
+  const chatAvatars = page.locator(".chat-avatar");
+  await expect(chatAvatars).toHaveCount(2);
+  await expect(chatAvatars.nth(0)).toHaveCSS("font-size", "10px");
+  await expect(chatAvatars.nth(1)).toHaveCSS("font-size", "10px");
   await expect(page.getByRole("checkbox", { name: "Web ON" })).toBeChecked();
   await page.setViewportSize({ width: 1280, height: 900 });
 

@@ -146,7 +146,7 @@ class ReadinessResponse(BaseModel):
 
 
 class CreateConversationRequest(BaseModel):
-    title: str | None = Field(default=None, max_length=300)
+    title: str | None = Field(default=None, max_length=74)
 
 
 class ConversationResponse(BaseModel):
@@ -171,7 +171,7 @@ class ConversationPageResponse(BaseModel):
 
 
 class RenameConversationRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=300)
+    title: str = Field(min_length=1, max_length=74)
 
     @field_validator("title")
     @classmethod

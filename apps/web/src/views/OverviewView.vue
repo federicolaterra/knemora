@@ -107,7 +107,7 @@ const countCards = computed(() => [
           <span
             class="pulse-orbit relative grid place-items-center [width:88px] [height:88px] [margin:22px_auto] text-brand bg-surface [border:1px_solid_#cde0d7] rounded-full [box-shadow:0_0_0_10px_rgb(51_209_51_/_5%),_0_0_0_20px_rgb(51_209_51_/_3%)]"
             ><BookOpen :size="26" /><i
-              class="orbit-dot absolute left-1/2 top-1/2 size-3 animate-orbit rounded-full bg-coral [margin:-6px_0_0_-6px] motion-reduce:animate-none motion-reduce:[transform:translateX(38px)]"
+              class="orbit-dot absolute left-1/2 top-1/2 size-3 animate-orbit rounded-full bg-[#F4A440] [margin:-6px_0_0_-6px] motion-reduce:animate-none motion-reduce:[transform:translateX(38px)]"
             ></i
           ></span>
           <dl>

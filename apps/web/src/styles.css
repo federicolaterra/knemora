@@ -11,6 +11,26 @@
 
   * {
     box-sizing: border-box;
+    scrollbar-color: #c8ceca transparent;
+    scrollbar-width: thin;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: #c8ceca;
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: #adb7b1;
   }
 
   html,
@@ -116,6 +136,27 @@
   ::selection {
     @apply bg-brand text-white;
   }
+}
+.os-theme-knemora {
+  --os-size: 6px;
+  --os-padding-perpendicular: 0;
+  --os-padding-axis: 1px;
+  --os-track-bg: transparent;
+  --os-track-bg-hover: transparent;
+  --os-track-bg-active: transparent;
+  --os-track-border: none;
+  --os-track-border-hover: none;
+  --os-track-border-active: none;
+  --os-track-border-radius: 999px;
+  --os-handle-bg: #c8ceca;
+  --os-handle-bg-hover: #adb7b1;
+  --os-handle-bg-active: #99a59f;
+  --os-handle-border: none;
+  --os-handle-border-hover: none;
+  --os-handle-border-active: none;
+  --os-handle-border-radius: 999px;
+  --os-handle-min-size: 32px;
+  --os-handle-interactive-area-offset: 3px;
 }
 button,
 .button {
