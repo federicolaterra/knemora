@@ -87,11 +87,11 @@ in the compiled knowledge base and linked back to evidence.
 
 ### Watch the full demo
 
-<a href="https://www.youtube.com/watch?v=kl5qNrWPOnY">
+<a href="https://www.youtube.com/watch?v=kl5qNrWPOnY" target="_blank" rel="noopener noreferrer">
   <img src="docs/assets/knemora-demo-video-alpha-github.png" alt="Watch the Knemora alpha demo on YouTube" width="640">
 </a>
 
-[Watch the Knemora demo on YouTube](https://www.youtube.com/watch?v=kl5qNrWPOnY).
+<a href="https://www.youtube.com/watch?v=kl5qNrWPOnY" target="_blank" rel="noopener noreferrer">Watch the Knemora demo on YouTube</a>.
 
 ## Quick start
 
