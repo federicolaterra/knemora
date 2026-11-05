@@ -58,7 +58,7 @@ an explicit network boundary and never gives Wiki mode public-search access.
 | [Installation](docs/open-source/installation.md) | [Knowledge Engine](docs/open-source/knowledge-engine.md) | [Security & Privacy](docs/open-source/security.md) |
 | [Models](docs/open-source/models.md) | [Second Brain & Wiki](docs/open-source/wiki.md) | [Backup & Restore](docs/open-source/backup-and-restore.md) |
 | [Ingestion & Provenance](docs/open-source/ingestion.md) | [Local Inference](docs/open-source/local-inference.md) | [Upgrading](docs/open-source/upgrading.md) |
-|  |  | [Development](docs/open-source/development.md) |
+|  | [Knowledge Updates & Recompilation](docs/open-source/knowledge-updates-and-recompilation.md) | [Development](docs/open-source/development.md) |
 
 See the [complete documentation index](#documentation-index) for additional guides.
 
@@ -182,7 +182,8 @@ review the full safety and recovery procedure in the [Installation guide](docs/o
 - Lexical/BM25 search and bounded graph navigation without a mandatory vector stack.
 
 Learn more in [Ingestion & Provenance](docs/open-source/ingestion.md), the
-[Knowledge Engine](docs/open-source/knowledge-engine.md), and [Second Brain & Wiki](docs/open-source/wiki.md).
+[Knowledge Engine](docs/open-source/knowledge-engine.md), [Knowledge Updates & Recompilation](docs/open-source/knowledge-updates-and-recompilation.md),
+and [Second Brain & Wiki](docs/open-source/wiki.md).
 
 ### Local AI
 
@@ -230,6 +231,7 @@ Review [Security & Privacy](docs/open-source/security.md) and
 - [AI (SI) Chat modes](docs/open-source/chat.md)
 - [Ingestion & Provenance](docs/open-source/ingestion.md)
 - [Knowledge Engine](docs/open-source/knowledge-engine.md)
+- [Knowledge Updates & Recompilation](docs/open-source/knowledge-updates-and-recompilation.md)
 - [Second Brain & Wiki](docs/open-source/wiki.md)
 - [Local Inference](docs/open-source/local-inference.md)
 - [Architecture](docs/open-source/architecture.md)

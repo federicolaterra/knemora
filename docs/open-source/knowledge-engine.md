@@ -116,3 +116,7 @@ unless logs show the model is still generating valid bounded output when the dea
 Model selection and context inspection are documented in [Models](models.md). The configured
 preference and current memory assessment are separate: a later start recalculates automatic
 admission from memory available at that time.
+
+For cache behavior, source reprocessing, linked versions, conflicting facts, deletion, and the
+different page/search/graph rebuild scopes, see
+[Knowledge Updates & Recompilation](knowledge-updates-and-recompilation.md).

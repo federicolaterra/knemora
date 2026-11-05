@@ -22,3 +22,6 @@ fails. Cleanup preserves shared facts backed by other sources and removes delete
 derived pages, source directories, and operational source metadata. Retry resumes the persisted
 stage; it does not reactivate the source. Historical conversations and independent backups are not
 rewritten.
+
+Reprocessing, changed uploads, linked versions, corrections, and fact-retirement limits are
+described in [Knowledge Updates & Recompilation](knowledge-updates-and-recompilation.md).
