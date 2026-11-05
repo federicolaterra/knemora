@@ -39,6 +39,8 @@ used by the product demo.
 
 ## Knowledge and graph
 
+![Knemora Quick Demo Second Brain graph with 120 connected synthetic knowledge pages](../assets/knemora-second-brain-presets-graph-github.png)
+
 The `Development` topic spans Architecture, Backend, Frontend, APIs, Database, Infrastructure,
 CI-CD, Security, Standards, ADRs, Runbooks, Services, Incidents, Releases, Teams, Glossary, and
 Projects. Validation requires at least 100 nodes, 95% connected pages, no more than five orphans,
