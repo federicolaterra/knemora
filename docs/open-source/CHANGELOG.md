@@ -6,6 +6,8 @@ and established interfaces.
 
 ## [Unreleased]
 
+## [0.2.0-alpha](https://github.com/federicolaterra/knemora/releases/tag/v0.2.0-alpha) - 2026-10-27
+
 ### Added
 
 - Request-scoped Fast / Deep chat controls with selected-model capability reporting, immutable
@@ -34,6 +36,14 @@ and established interfaces.
 
 ### Changed
 
+- Restructured the public README as a concise product entry point with an early documentation
+  gateway, three real product walkthrough GIFs, a linked YouTube demo, prominent Quick Start and
+  synthetic Quick Demo paths, prominent Portable Backups and Uninstall guidance, and focused
+  capability, operations, and community sections. Hardware/model badges and the setup walkthrough
+  remain visible in the README, while the architecture diagrams live in the Architecture guide.
+  Installation, Models, Local Inference, AI (SI) Chat modes, Architecture, Knowledge
+  Engine, Development, and demo documentation now have clearer topic ownership; redundant public
+  pagination/history navigation and model-verification narratives were removed.
 - The CLI welcome banner restores the original **Open-source, Local-first AI (SI) Second Brain**
   tagline and appears only for `./knemora` and `./knemora start`; focused maintenance commands no
   longer print it. The root README now links detailed updates, workspace/history, chat modes,
@@ -73,7 +83,7 @@ and established interfaces.
 - Intentional compilation now requires each existing-page proposal to be grounded in every cited
   source record and skips byte-identical Wiki writes, index rebuilds, and manifest rewrites.
 
-## [0.1.0-alpha] - 2026-10-11
+## [0.1.0-alpha](https://github.com/federicolaterra/knemora/releases/tag/v0.1.0-alpha) - 2026-10-13
 
 ### Added
 
