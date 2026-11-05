@@ -39,8 +39,9 @@ and established interfaces.
 - Restructured the public README as a concise product entry point with an early documentation
   gateway, three real product walkthrough GIFs, a linked YouTube demo, prominent Quick Start and
   synthetic Quick Demo paths, prominent Portable Backups and Uninstall guidance, and focused
-  capability, operations, and community sections. Hardware/model badges and the setup walkthrough
-  remain visible in the README, while the architecture diagrams live in the Architecture guide.
+  capability, operations, and community sections. Hardware/model badges remain visible in the
+  README; the setup walkthrough lives in Installation, and the architecture diagrams live in the
+  Architecture guide.
   Installation, Models, Local Inference, AI (SI) Chat modes, Architecture, Knowledge
   Engine, Development, and demo documentation now have clearer topic ownership; redundant public
   pagination/history navigation and model-verification narratives were removed.

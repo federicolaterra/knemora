@@ -21,6 +21,8 @@ required for the managed path. Knemora does not install Node or perform privileg
 
 ## Acquire and set up Knemora
 
+![Knemora setup and startup](../assets/knemora-setup-github.png)
+
 ```bash
 git clone https://github.com/federicolaterra/knemora.git
 cd knemora

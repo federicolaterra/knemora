@@ -88,14 +88,12 @@ in the compiled knowledge base and linked back to evidence.
 ### Watch the full demo
 
 <a href="https://www.youtube.com/watch?v=kl5qNrWPOnY">
-  <img src="https://img.youtube.com/vi/kl5qNrWPOnY/hqdefault.jpg" alt="Watch the Knemora demo on YouTube" width="640">
+  <img src="docs/assets/knemora-demo-video-alpha-github.png" alt="Watch the Knemora alpha demo on YouTube" width="640">
 </a>
 
 [Watch the Knemora demo on YouTube](https://www.youtube.com/watch?v=kl5qNrWPOnY).
 
 ## Quick start
-
-![Knemora setup and startup](docs/assets/knemora-setup-github.png)
 
 ### Requirements
 
@@ -109,6 +107,8 @@ Linux, and Intel macOS adapters are planned but are not supported in this releas
 Knemora manages its own uv, CPython, llama.cpp, locked application dependencies, and selected
 model. Initial setup needs network access to download them; prepared private local operation does
 not require a hosted service.
+
+### Set up and start — only two Knemora commands
 
 ```bash
 git clone https://github.com/federicolaterra/knemora.git
