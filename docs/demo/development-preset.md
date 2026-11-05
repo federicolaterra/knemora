@@ -1,9 +1,11 @@
-# Development demo preset
+# Quick Demo — Synthetic Data
 
-The version 1 Development preset is entirely fictional, synthetic, demo-only, and non-production.
-It contains no customer, private, or externally sourced content.
+Explore Knemora before uploading personal documents. The Quick Demo starts an isolated, read-only
+workspace with 120 connected Wiki pages, grounded AI (SI) Chat, and a native Second Brain graph.
+Its version 1 Northstar Labs preset is entirely fictional, synthetic, demo-only, and
+non-production. It contains no customer, private, or externally sourced content.
 
-## Start
+## Start the demo
 
 ```bash
 ./knemora start --with-presets
@@ -24,7 +26,8 @@ Wiki root all use the same selected mode. Switching between normal and Developme
 managed services instead of reusing a process configured for the other mode. `READY` is printed
 only when the managed processes are alive and the API reports the requested mode.
 
-Development mode is intentionally read-only. The API rejects source upload/delete/retry/reprocess,
+The demo's Development mode is intentionally read-only. The API rejects source
+upload/delete/retry/reprocess,
 knowledge compilation/index rebuild, and dataset analysis with a clear `403` response. The Vue UI
 hides those mutation workflows while keeping the synthetic Wiki and grounded chat available.
 
@@ -35,6 +38,8 @@ source manifests, BM25 index entries, and graph relationships. Direct final-Wiki
 used by the product demo.
 
 ## Knowledge and graph
+
+![Knemora Quick Demo Second Brain graph with 120 connected synthetic knowledge pages](../assets/knemora-second-brain-presets-graph-github.png)
 
 The `Development` topic spans Architecture, Backend, Frontend, APIs, Database, Infrastructure,
 CI-CD, Security, Standards, ADRs, Runbooks, Services, Incidents, Releases, Teams, Glossary, and

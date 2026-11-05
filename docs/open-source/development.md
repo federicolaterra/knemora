@@ -24,6 +24,25 @@ disabled launch profile. ADK Web acceptance
 must use `./knemora --dev adk-web`, verify the printed loopback URL and `/list-apps`, and confirm a
 repeated launch does not replace another listener.
 
+## Google ADK developer playground
+
+With the configured local model server running, developers can start Google's ADK Web interface in
+a separate terminal:
+
+```bash
+./knemora --dev adk-web
+```
+
+The command imports Knemora's existing `knowledge_agent` through the locked API environment; it
+does not create another agent or change the normal product runtime. It binds to loopback, prints the
+actual URL, runs in the foreground, and chooses a free port from its bounded development range.
+A repeated launch reports the existing Knemora ADK Web URL instead of replacing another listener.
+
+Use the playground's own chat when inspecting Events and Trace because requests from the normal
+Knemora UI do not automatically enter this separate process. Stop it with Ctrl+C. The playground is
+local, unauthenticated developer tooling: do not expose it to an untrusted network, and do not treat
+it as part of `./knemora start`.
+
 Second Brain changes must keep graph packages lazy-loaded, preserve safe Wiki-relative path
 resolution, and stop/kill Sigma instances and ForceAtlas2 workers on refresh and unmount. Use
 `npm run build` to verify worker chunking. Backend graph tests cover aliases, duplicate basenames,

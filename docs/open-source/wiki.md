@@ -44,3 +44,6 @@ justify different limits.
 - Layout runs in a worker for a bounded interval (at most 2.5 seconds in the current UI). **Reset
   layout** starts a new bounded run; dragging a node stops the active run so it does not fight the
   user.
+
+See [Knowledge Updates & Recompilation](knowledge-updates-and-recompilation.md) for how source
+changes affect Wiki pages, the lexical index, manifests, and this lazy graph projection.

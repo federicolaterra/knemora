@@ -1,101 +1,126 @@
 # Local inference
 
-Knemora uses `LocalLlamaCppProvider` through the application-owned `LLMProvider` contract. On
-supported macOS Apple Silicon, `./knemora setup` installs the complete official llama.cpp b11146
-arm64/Metal payload beneath `KNEMORA_HOME`, verifies its provenance/capabilities/dependencies, and
-uses the centralized model registry. Homebrew and an arbitrary PATH executable are never implicit
-runtime choices. The default stable ID `qwen3-8b-q3-k-m` resolves to
-`ISTA-DASLab/Qwen3-8B-GGUF-GSQ/qwen3-8b-Q3_K_M.gguf` with its published full SHA-256. The
-8,192-token, single-slot runtime profile is the full-context target on the primary 16 GB
-unified-memory host. Admission remains dependent on current safe memory. Each start tries that
-automatic profile first and, when necessary, may admit the supported 4,096-token fallback; if even
-the fallback is unsafe, startup is refused. Reduced context can truncate broad or multi-step answers
-sooner and is not an equivalent-quality mode. Explicit per-model or environment overrides are never
-silently lowered. The former 27B model remains selectable as `qwen3.8-27b-iq2-s`; it is no longer the
-default.
+Local inference means Knemora sends model requests to a llama.cpp server running on the same
+machine instead of requiring a hosted LLM API. Domain services call the application-owned
+`LLMProvider` boundary, so knowledge and chat code do not depend directly on llama.cpp types.
 
-The optional `gemma-4-e4b-q4-k-m` entry pins Unsloth's
-`gemma-4-E4B-it-Q4_K_M.gguf` at immutable revision
-`bfc15c382204943c3a8fff0c750b94ae2364d7a3`, size 4,977,171,584 bytes, and SHA-256
-`85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87`. The local artifact hash
-was independently verified, and managed llama.cpp b11146 passed load, non-thinking Jinja chat,
-strict JSON-schema, and OpenAI-compatible tool-call smokes at 8,192 tokens. Real thinking-off
-acceptance also passes Direct and grounded Wiki behavior plus strict version-1 knowledge compilation
-for equivalent TXT, PDF, and DOCX fixtures, including provenance, retrieval, atomic invalid-output
-failure, and reprocess idempotency. The exact artifact is Knemora-tested: a disposable synthetic
-home passed managed Qwen → Gemma → Qwen selection and startup, API/UI/inference readiness, grounded
-continuity, byte/hash preservation, and a naturally rejected unsafe-start rollback without a memory
-safeguard bypass. Live Gemma passed at the supported 4,096-token context on the 16 GiB acceptance
-host; the earlier compilation matrix passed at 8,192 tokens. The label is scoped to this pinned
-artifact and managed llama.cpp b11146. Catalog listing never downloads or selects it, and Qwen
-remains the default.
+For available models, selection, custom imports, licenses, and removal, see [Models](models.md).
 
-Both Wiki and Direct chat modes use this same active model and provider path. Direct is not a
-second client or model: it is an ADK invocation with private retrieval tools withheld. Its optional
-public search is a separate pre-model application step, not an ADK tool. Direct does not imply a
-universal latency improvement.
+## Managed llama.cpp runtime
 
-Chat thinking control is request-scoped and provider-neutral. Curated Qwen templates declare
-`chat_template_enable_thinking` and the adapter sends the frozen value as
-`chat_template_kwargs.enable_thinking` on every request in the turn. The exact curated Gemma 4 E4B
-GGUF template also branches on that boolean and is registered with the same verified capability,
-matching Google's [Gemma 4 thinking guidance](https://ai.google.dev/gemma/docs/capabilities/thinking)
-and llama.cpp's documented
-[`chat_template_kwargs`](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md).
-Custom models remain unverified unless a future capability record says otherwise. Fast is the
-missing-setting default. Unsupported or unverified explicit modes fail clearly; controls do
-not restart llama.cpp, reload the GGUF, enlarge context, expose hidden reasoning, or alter the
-separately configured version-1 knowledge compiler. Managed llama.cpp b11146 was inspected and its
-installed build reports `0.5.0-dev` at commit `7fe450e19`. The template and request path were
-verified read-only; matched real Fast/Deep generation remains a separate manual acceptance step.
+On supported macOS Apple Silicon, `./knemora setup` installs the complete pinned llama.cpp
+arm64/Metal payload beneath `KNEMORA_HOME`. Knemora verifies its provenance, architecture,
+capabilities, dependent libraries, and inventory before activation. A staged or invalid runtime
+never replaces the last verified installation.
 
-Content-free telemetry separates provider duration, llama.cpp prefill/decode timings, time to first
-streamed token/visible delta, history preparation, ADK session setup and replay, persistence, model,
-effective context, history length, stream mode, tool count, token usage, and finish reason. Browser
-console telemetry records end-to-end stream, first-delta, and render-settle timing without prompts
-or responses. Direct also skips constructing retrieval tools for the invocation.
+Normal setup and start do not discover an arbitrary `llama-server` from `PATH`. Runtime resolution
+uses this precedence:
 
-Resolution precedence is a validated absolute `LLAMA_SERVER_BIN` operator override, the verified
-active managed installation, then a validated explicitly configured legacy `LLAMA_CPP_DIR` source
-checkout. Manual developers may still build a separate checkout with `make llm-build`, but normal
-setup/start use `NativeRuntimeManager` and do not discover `llama-server` from PATH.
+1. a validated absolute executable supplied through `LLAMA_SERVER_BIN`;
+2. the active verified managed installation; then
+3. an explicitly configured legacy `LLAMA_CPP_DIR` checkout.
 
-The effective Model Registry merges source-controlled curated entries with user imports stored at
-`~/.knemora/config/models.json`. The lifecycle contract is:
+Manual developers may build a separate llama.cpp checkout with `make llm-build`, but the managed
+path uses the centralized runtime manager.
+
+## Startup and request flow
+
+`./knemora start` performs a memory and context preflight, launches one managed llama-server on a
+loopback address, waits for readiness, then starts FastAPI and Vue. The selected GGUF is loaded once
+and shared by AI (SI) Chat and knowledge compilation through provider-neutral requests.
 
 ```text
-load   = import + validate + register
-setup  = select/configure a registered model
-models = inspect the effective local registry
+Vue → FastAPI → Google ADK or Knowledge Engine → LLMProvider → loopback llama-server
 ```
 
-`./knemora load --model hf:<owner>/<repository>:<variant>` resolves exactly one GGUF through the
-Hugging Face HTTPS API, supports rerun-based partial resume, validates advertised size and SHA-256
-when available, checks the GGUF header, and atomically promotes the artifact before registry
-commit. It does not run model repository code or enable `trust_remote_code`. Custom entries report
-runtime compatibility as `not-checked` until exercised with the installed llama.cpp and remain
-`custom-unverified-by-knemora` regardless of successful container/checksum validation.
+The runtime uses one model slot with Metal layer offload on the supported platform. Knemora passes
+bounded context, batch, cache, timeout, cancellation, streaming, structured-output, and
+chat-template options through the provider boundary. The server remains a separate operating-system
+process with its own PID, log, readiness endpoint, and shutdown handling.
 
-Removal is deliberately two-stage for both curated and imported models:
+Private prompts, Wiki evidence, and model responses remain on the machine during ordinary local
+inference. Optional Direct-mode web search is a separate explicit network step before model
+synthesis; it is not a llama.cpp feature and is never available to Wiki mode.
+
+## Context and memory behavior
+
+Before startup, Knemora estimates model weights, Q8 KV cache, runtime/workspace overhead, current
+available unified memory, and a safety reserve. Automatic profiles try their preferred context and
+may use the supported 4,096-token fallback only when that fallback also passes admission. If no safe
+profile exists, startup is refused before the model is launched.
+
+Reduced context gives the agent less room for system policy, conversation history, tools, evidence,
+and output. Knemora preserves the current turn and required policy first, then drops older complete
+conversation turns and bounds tool evidence. Explicit context overrides are never silently lowered.
+See [Models](models.md#memory-context-and-compatibility) for selection and context commands.
+
+Fast/Deep is a request-scoped chat-template capability. It does not reload the model, change the
+global context, reveal hidden reasoning, or alter the independent knowledge compiler. Knemora only
+offers labelled control for model templates whose behavior has been verified. See
+[AI (SI) Chat modes](chat.md#fast-deep-and-response-metadata).
+
+## Operational diagnostics
+
+Use the managed lifecycle commands first:
 
 ```bash
-./knemora model remove <id>
-./knemora model remove <id> registry
+./knemora status
+./knemora logs
+./knemora logs --follow
+./knemora doctor
 ```
 
-The first command removes only managed local artifact data. The second is rejected while any final,
-partial, or invalid artifact remains, and its error prints both commands in the required order.
-For a user import, the second command removes its user registry entry. For a curated model, it adds
-a persistent local suppression to the user registry so the source-controlled definition is omitted
-from the effective registry. The required default definition cannot be suppressed, and active
-models must be deselected first.
+When diagnosing inference:
 
-Metal offload, direct llama.cpp throughput, memory pressure, ADK call count, Wiki latency, and
-end-to-end SSE timing were verified on the primary M1 Pro host. The Qwen3-8B profile replaced the
-earlier 27B default to retain memory headroom and improve agent latency on the 16 GB target.
-Configuration alone is never evidence that GPU offload is active; confirm assigned layers and the
-Metal device in the running server log.
+- confirm `status` reports the intended normal or demo mode and one ready llama.cpp process;
+- inspect the server log for the selected model, context, assigned Metal layers, Metal device, and
+  readiness result—configuration alone is not proof that GPU offload is active;
+- inspect the selected model with `./knemora model info MODEL_ID` to compare configured preference
+  with the last effective context and memory assessment;
+- check available unified memory before retrying an admission failure;
+- treat context overflow, output truncation, timeout, allocation failure, and runtime exit as
+  different problems rather than increasing every limit at once.
 
-No model weights are included. Review the exact model's license and terms before use. Model files
-should remain outside Git and protected as operational assets. Future providers can implement the
-same capability-aware contract without changing knowledge-domain code.
+Content-free telemetry records provider duration, llama.cpp prefill/decode timing, time to first
+visible token, token counts, finish reason, model identity, effective context, history size, and
+tool count. It excludes prompts, responses, source contents, and hidden reasoning.
+
+## Common failures
+
+### The model is refused before startup
+
+The current model/context profile did not fit the safe memory budget. Close memory-heavy work and
+retry, choose a more suitable registered model, or remove an unsafe explicit context override. Do
+not bypass the guard by editing selection metadata.
+
+### llama-server starts but never becomes ready
+
+Inspect `./knemora logs` for runtime integrity, architecture, library, port, model, and allocation
+errors. Run `./knemora setup` to repair managed components; do not replace the managed binary with an
+unverified executable from `PATH`.
+
+### Responses truncate or broad tasks lose context
+
+Check the last effective context. An automatic 4,096-token fallback is safe but provides less
+working room than the preferred profile. Reduce the conversation/evidence scope or, only when the
+host can admit it, select a validated larger context through the [Models guide](models.md).
+
+### Knowledge compilation reaches its timeout
+
+Compilation uses a separate bounded response-read timeout because structured output can take longer
+than ordinary chat. Increase it only when logs show a healthy request is still generating valid
+bounded output at the deadline:
+
+```dotenv
+KNEMORA_KNOWLEDGE_COMPILATION_TIMEOUT_SECONDS=500
+```
+
+Restart after editing `.env`. A longer timeout does not add context, output tokens, or retries, and
+does not repair invalid structured output.
+
+## Architecture and future providers
+
+The local provider implements capability, timeout, cancellation, streaming, structured-output, and
+usage contracts without leaking llama.cpp-specific objects into domain code. A future provider can
+implement the same boundary, but no hosted provider is required or currently part of the supported
+local product path. See [Architecture](architecture.md) for the broader component and trust model.

@@ -1,10 +1,10 @@
 # Architecture
 
 Knemora Open-Source is a local-first modular monolith: Vue calls FastAPI; FastAPI enforces identity
-and authorization before domain services; Google ADK coordinates narrow knowledge, analysis, and
-explicitly opted-in Direct public-search outcomes; all model calls cross `LLMProvider`; SQLite stores
-operational metadata; immutable bytes and the Markdown Wiki remain in explicit filesystem
-boundaries.
+and authorization before domain services; Google ADK coordinates narrow knowledge and analysis
+tools; explicitly opted-in Direct public search is bounded before model invocation; all model calls
+cross `LLMProvider`; SQLite stores operational metadata; immutable bytes and the Markdown Wiki
+remain in explicit filesystem boundaries.
 
 Core boundaries are knowledge, ingestion, Wiki, lexical/graph search, deterministic analytics,
 agents, providers, authentication, and API contracts. `CapabilityRegistry` reports actual features
@@ -13,6 +13,14 @@ real implementation requires them.
 
 The open-source application includes all current core functionality without edition conditionals or
 artificial limits. Cloud infrastructure is not a prerequisite for the core.
+
+## System architecture
+
+![Knemora system architecture](../assets/knemora-system-architecture-github.png)
+
+## AI (SI) core architecture
+
+![Knemora AI (SI) core architecture](../assets/knemora-core-ai-architecture-github.png)
 
 Public search is optional rather than a core dependency. `KNEMORA_WEB_SEARCH_ENABLED` supplies a
 startup default, while an explicit Direct request may override it in either direction. FastAPI
@@ -68,8 +76,6 @@ POSIX entrypoint → thin Node cold bootstrap → existing Python CLI/compositio
 │   └── Vue
 ├── real process/HTTP health checks
 ├── optional loopback-only ADK Web developer launcher
-├── Portable Backup Manager
-│   └── SQLite snapshot + Wiki/sources/datasets/config → checksummed ZIP → staged restore
 └── Development Preset Manager
     └── cached synthetic source → ingestion → KnowledgeCompiler → Wiki/search/graph
 ```
@@ -89,8 +95,6 @@ The native Second Brain is lazy-loaded in Vue. FastAPI projects explicit relatio
 and relative Markdown links into a rebuildable graph index. Sigma.js renders it, Graphology owns
 the client graph, and a bounded ForceAtlas2 worker performs layout without blocking the UI.
 
-Portable backup is an application-owned boundary rather than a shell composition of component
-archives. Full backup coordinates managed writers, excludes secrets and model binaries, and
-atomically publishes only a validated archive. Restore never extracts untrusted paths directly
-into active data: it validates checksums/schema/integrity, stages content, creates an external
-recovery archive, and then activates same-filesystem replacements with rollback.
+SQLite, the Wiki, immutable sources, datasets, configuration, and model assets remain distinct
+user-owned storage boundaries under the configured Knemora home. Backup and recovery procedures
+are documented in [Backup & Restore](backup-and-restore.md).

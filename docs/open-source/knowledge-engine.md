@@ -24,11 +24,9 @@ Durable Markdown/frontmatter, API, database, page, claim, relationship, search, 
 are unchanged, so no data or schema migration is required.
 
 The compact version-2 DTO and deterministic expansion adapter remain available for isolated
-experiments and compatibility validation, but normal compilation does not request v2. The failed
-2026-10-25 Qwen acceptance showed that v2-first behavior generated invalid TXT/PDF responses and a
-terminal DOCX failure, so it must not be re-enabled without a separate controlled investigation and
-matched real-model acceptance. Existing version-1 and expanded cached/in-flight proposals remain
-valid; the adapter also remains able to read a version-2 payload without changing durable Wiki
+experiments and compatibility validation, but normal compilation does not request v2. Re-enabling
+it requires separate controlled validation. Existing version-1 and expanded cached/in-flight
+proposals remain valid; the adapter can read a version-2 payload without changing durable Wiki
 formats.
 
 The contract is independent of model name, parameter count, inference provider, and hardware. The
@@ -39,39 +37,28 @@ length result retains the existing single context-safe retry. This does not assu
 model is faster or that a smaller model is less capable, and it creates no model-size-specific
 pipeline.
 
-Historical deterministic fixture measurement found that the compact-serialized relationship
-fixture fell from 890 to 413 characters (53.6%), the validating response schema from 2,162 to 1,719
-characters (20.5%), and the system prompt from 2,869 to 2,500 characters (12.9%). Those character
-measurements did not translate into valid real-model output and are not performance claims.
+## Evidence-grounded relationships
 
-## Relationship safelist
+Knemora can extract a bounded set of supported family, professional, educational, organizational,
+project, technology, and geographic relationships. The set is application-controlled; the model
+cannot invent arbitrary edge types or expand the taxonomy through source text.
 
-The existing structured proposal call receives Knemora's bounded relationship taxonomy. Version 1
-covers family (including `sibling_of`, `parent_of`, `child_of`, `spouse_of`, and close kinship),
-professional (`works_at`, `employed_by`, `colleague_of`, `founder_of`, and `owner_of`), education,
-organization, project/technology, and geography relations. Known aliases are normalized to the
-canonical label. Existing Wiki files and legacy relationship labels remain readable and are not
-rewritten.
-
-A safelisted edge requires exact source-record locators, two uniquely resolved page identities,
-and an explicit matching statement in the source evidence. Knemora rejects or skips negated,
+Every accepted edge needs exact source locators, two uniquely resolved page identities, and an
+explicit matching statement in the evidence. Known equivalent labels are normalized internally,
+while existing Wiki files and legacy labels remain readable. Knemora rejects or skips negated,
 hypothetical, quoted, ambiguous, self-referential, unresolved, or unsupported proposals and records
-a compilation warning instead. A bounded deterministic check can recover a relation omitted by the
-model only when the same explicit evidence and identity checks pass. A unique full-name introduction
-may support a later unambiguous first-name or singular `he`/`she` reference within the same record,
-or across at most three contiguous DOCX paragraph records, two ordinal steps, and 2,000 source
-characters. Cross-record windows never cross document versions, tables, non-contiguous records, or
-section boundaries; an unrelated intervening paragraph breaks carryover. Relationships that need
-the introduction and relation paragraphs retain both original locators in provenance. Ambiguous
-short names and pronouns produce content-free rejection diagnostics rather than guessed edges.
-Headings and special author markup are never required.
+a content-free warning instead of guessing.
 
-Historical `colleague_of` evidence is retained as a relationship because it records that the
-professional connection existed; the source claim and provenance retain the past or former wording,
-and the edge does not assert that the people are current colleagues. The recovery pass never derives
-an edge from a filename, metadata topic, label, keyword alone, or simple co-occurrence. Friendship,
-acquaintance, and shared preferences are not mandatory structural relations. Symmetric relations are
-stored once in a stable direction; the graph remains a rebuildable projection of the Markdown Wiki.
+Bounded identity resolution can connect an unambiguous short-name or pronoun reference to a nearby
+full introduction, including a small contiguous window of same-section DOCX paragraphs. It never
+crosses document versions, tables, unrelated paragraphs, or section boundaries, and all evidence
+needed for the connection remains in provenance. A deterministic recovery pass may add a relation
+omitted by the model only when the same identity, evidence, and validation rules pass. Filenames,
+metadata, keywords, and simple co-occurrence never create an edge.
+
+Claims preserve temporal wording such as past or former relationships; a graph edge does not silently
+upgrade historical evidence into a present-tense assertion. The graph remains a rebuildable
+projection of the authoritative Markdown Wiki.
 
 ## Identity-neutral analysis and stage measurement
 
@@ -126,12 +113,10 @@ This setting changes waiting time only. It does not increase the output-token li
 or retry count, and it does not make schema-invalid output acceptable. Prefer the 300-second default
 unless logs show the model is still generating valid bounded output when the deadline is reached.
 
-Check the default model's context state with:
+Model selection and context inspection are documented in [Models](models.md). The configured
+preference and current memory assessment are separate: a later start recalculates automatic
+admission from memory available at that time.
 
-```bash
-./knemora model info qwen3-8b-q3-k-m
-```
-
-Use the reported **last effective context** to distinguish the full 8,192-token runtime from the
-automatic 4,096-token fallback. The configured preference and current memory assessment are
-separate: a later start recalculates automatic admission from memory available at that time.
+For cache behavior, source reprocessing, linked versions, conflicting facts, deletion, and the
+different page/search/graph rebuild scopes, see
+[Knowledge Updates & Recompilation](knowledge-updates-and-recompilation.md).

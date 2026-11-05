@@ -2,357 +2,255 @@
 
 <p align="center">
   <a href="https://knemora.space#gh-dark-mode-only">
-    <img
-      src="docs/assets/knemora-logo-light.png#gh-dark-mode-only"
-      alt="Knemora"
-      width="420"
-    >
+    <img src="docs/assets/knemora-logo-light.png#gh-dark-mode-only" alt="Knemora" width="420">
   </a>
   <a href="https://knemora.space#gh-light-mode-only">
-    <img
-      src="docs/assets/knemora-logo-dark.png#gh-light-mode-only"
-      alt="Knemora"
-      width="420"
-    >
+    <img src="docs/assets/knemora-logo-dark.png#gh-light-mode-only" alt="Knemora" width="420">
   </a>
 </p>
 
-### Open-source, Local-first AI (SI) Second Brain
+### Open-source, local-first AI (SI) Second Brain
 
 <p>
-  <img src="https://img.shields.io/badge/100%25-LOCAL%20BY%20DEFAULT-33D133?style=for-the-badge&amp;labelColor=17221F" alt="100% local by default">
-  <img src="https://img.shields.io/badge/server-llama.cpp%20%C2%B7%20loopback-33D133?style=for-the-badge&amp;labelColor=17221F" alt="Local llama.cpp inference server">
+  <img src="https://img.shields.io/badge/local-first-33D133?style=for-the-badge&amp;labelColor=17221F" alt="Local-first">
+  <img src="https://img.shields.io/badge/release-v0.2.0--alpha-2563EB?style=for-the-badge" alt="Latest tagged release: v0.2.0-alpha">
   <img src="https://img.shields.io/badge/license-MIT-33D133?style=for-the-badge&amp;labelColor=17221F" alt="MIT License">
   <br>
   <img src="https://img.shields.io/badge/default-Qwen3--8B%20Q3__K__M-2563EB" alt="Default model: Qwen3-8B Q3_K_M">
-  <img src="https://img.shields.io/badge/stress%20test-Qwen3.8--27B%20IQ2__S-2563EB" alt="Stress-tested model: Qwen3.8-27B IQ2_S">
   <img src="https://img.shields.io/badge/tested%20on-M1%20Pro%20%C2%B7%2016%20GB-17221F" alt="Tested on Apple M1 Pro with 16 GB unified memory">
   <img src="https://img.shields.io/badge/compute-Metal%20%C2%B7%206%20CPU%20threads-17221F" alt="Metal offload with six CPU threads">
 </p>
 
+Turn documents and data into an organized, searchable, connected knowledge base. Knemora builds a
+portable Markdown Wiki and native knowledge graph, then uses local models to answer questions with
+citations to your sources.
+
+**Available now for macOS Apple Silicon; additional platforms are planned.**
+
+[Quick Start](#quick-start) · [Try the Demo](#try-the-quick-demo) ·
+[Documentation](#explore-the-documentation) · [Watch Demo](#watch-the-full-demo)
+
 </div>
 
-Knemora is an open-source, local-first knowledge and agent platform with a native Second Brain
-graph, a portable Markdown Wiki, and local AI (SI) inference. It works without a mandatory cloud
-service, external LLM API, vector database, or desktop knowledge application.
-
-This repository is prepared for its first public release, `v0.1.0-alpha`. It is alpha software
-intended for early testing and feedback; a future `v1.0.0` is planned after further development,
-with no release date announced.
+> [!NOTE]
+> Knemora is still in alpha. The founder is actively improving the project and adding features
+> toward the stable `v1.0.0` release.
 
 ## What is Knemora?
 
+Knemora keeps your source material, operational data, compiled Wiki, and model runtime under your
+control. It ingests PDF, TXT, Markdown, DOCX, CSV, and XLSX files; preserves immutable originals and
+claim-level provenance; and connects the resulting knowledge through standard Markdown links.
+
 ```text
-documents + data
-      ↓
-knowledge compilation
-      ↓
-living Markdown Wiki
-      ↓
-native Second Brain graph
-      ↓
-private search, chat, and analysis
+documents + data → knowledge compilation → Markdown Wiki → Second Brain graph → cited answers
 ```
 
-**Knemora Open-Source includes:**
+Private inference runs locally through llama.cpp. No hosted LLM API, vector database, licensing
+server, subscription, or telemetry service is required. Optional Direct-mode public web search is
+an explicit network boundary and never gives Wiki mode public-search access.
 
-- local document ingestion for PDF, TXT, Markdown, DOCX, CSV, and XLSX;
-- immutable source storage and claim-level provenance;
-- a portable LLM Wiki using Markdown, YAML frontmatter, wikilinks, and relative Markdown links;
-- a native Sigma.js/Graphology Second Brain with global and local graph views;
-- lexical/BM25 search and bounded graph navigation without mandatory embeddings;
-- local Qwen inference through llama.cpp behind a provider-neutral boundary;
-- deterministic Polars-based dataset analysis and chart-ready results;
-- authenticated sessions, backend RBAC, audit events, and content-free observability;
-- backup, restore, migration, and Wiki maintenance workflows.
+## Explore the documentation
 
-These capabilities are part of the current open-source application. There is no separate commercial
-edition, feature paywall, licensing server, subscription, or silent telemetry.
+| Get started | Explore Knemora | Operate and develop |
+| --- | --- | --- |
+| [Quick Demo](docs/demo/development-preset.md) | [AI (SI) Chat modes](docs/open-source/chat.md) | [Architecture](docs/open-source/architecture.md) |
+| [Installation](docs/open-source/installation.md) | [Knowledge Engine](docs/open-source/knowledge-engine.md) | [Security & Privacy](docs/open-source/security.md) |
+| [Models](docs/open-source/models.md) | [Second Brain & Wiki](docs/open-source/wiki.md) | [Backup & Restore](docs/open-source/backup-and-restore.md) |
+| [Ingestion & Provenance](docs/open-source/ingestion.md) | [Local Inference](docs/open-source/local-inference.md) | [Upgrading](docs/open-source/upgrading.md) |
+|  | [Knowledge Updates & Recompilation](docs/open-source/knowledge-updates-and-recompilation.md) | [Development](docs/open-source/development.md) |
 
-## Requirements (macOS Apple Silicon)
+See the [complete documentation index](#documentation-index) for additional guides.
 
-The upcoming public alpha supports managed setup on native macOS Apple Silicon with Metal. Install:
+## See Knemora in action
 
-- **Required:** Node.js 24 or newer with npm, from [nodejs.org](https://nodejs.org/) or another
-  trusted distribution. Knemora does not install or change Node globally.
-- **Acquisition only:** Git when using the documented `git clone` route.
-- **Disk:** at least 7 GB free for the 4.12 GB default GGUF, staged/downloaded runtime components,
-  application packages, and working data. Additional source documents and backups need more space.
+### Document ingestion
 
-The launcher verifies and manages uv 0.11.22, CPython 3.13.14, llama.cpp b11146 and its complete
-library payload, locked application dependencies, and the selected model in application-owned
-locations. Initial setup needs network access for runtime, package, and model downloads; prepared
-start and private local operation do not check release hosts or require a hosted service. This is
-managed local runtime installation, not a claim that Knemora is dependency-free or already
-cross-platform.
+Upload sources and follow each validation, parsing, analysis, Wiki compilation, linking, and
+indexing stage. Completed jobs show the knowledge pages created from the source.
 
-## Quick start — Zero-Config
+![Knemora document ingestion pipeline showing processing stages and compiled knowledge pages](docs/assets/demos/document-ingestion.gif)
 
-![Knemora setup and startup](docs/assets/knemora-setup-github.png)
+### Knowledge and Second Brain
 
-Zero-Config means Knemora performs managed setup with sensible defaults, installs its Python and
-inference runtimes into application-owned locations, and requires no manual configuration for the
-standard onboarding path. Node.js 24 with npm remains a prerequisite, and the first setup performs
-the downloads described above.
+Browse generated knowledge pages, inspect supported claims and their source references, and move
+through the same connected Markdown knowledge that powers the native Second Brain graph.
 
-Acquire the application checkout separately:
+![Knemora Knowledge view showing a generated page, supported claims, and source references](docs/assets/demos/knowledge-second-brain.gif)
+
+### AI (SI) Chat
+
+Ask questions across authorized company knowledge. In Wiki mode, factual answers can be grounded
+in the compiled knowledge base and linked back to evidence.
+
+![Knemora AI (SI) Chat showing the Wiki and Direct controls and grounded-question composer](docs/assets/demos/ai-chat.gif)
+
+### Watch the full demo
+
+<a href="https://www.youtube.com/watch?v=kl5qNrWPOnY" target="_blank" rel="noopener noreferrer">
+  <img src="docs/assets/knemora-demo-video-alpha-github.png" alt="Watch the Knemora alpha demo on YouTube" width="640">
+</a>
+
+<a href="https://www.youtube.com/watch?v=kl5qNrWPOnY" target="_blank" rel="noopener noreferrer">Watch the Knemora demo on YouTube</a>.
+
+## Quick start
+
+### Requirements
+
+Managed installation currently supports **native macOS on Apple Silicon with Metal**. Windows,
+Linux, and Intel macOS adapters are planned but are not supported in this release.
+
+- Node.js 24 or newer with npm
+- Git for the documented clone route
+- At least 7 GB of free disk space for the default model, runtimes, packages, and working data
+
+Knemora manages its own uv, CPython, llama.cpp, locked application dependencies, and selected
+model. Initial setup needs network access to download them; prepared private local operation does
+not require a hosted service.
+
+### Set up and start — only two Knemora commands
 
 ```bash
 git clone https://github.com/federicolaterra/knemora.git
 cd knemora
-```
-
-Then prepare and start the private local application with the two explicit commands:
-
-```bash
 ./knemora setup
 ./knemora start
 ```
 
-The canonical checkout directory is `knemora`. When renaming or moving an existing checkout, stop
-managed services first and run `./knemora setup` once from the new location. Setup rebuilds
-location-bound Python console scripts against Knemora's managed interpreter while preserving `.env`
-and all application data under `~/.knemora`.
+Setup verifies the host, installs application-owned runtimes and dependencies, downloads and
+validates the selected model, initializes SQLite, and applies migrations. Start launches the local
+model server, API, and web app. When startup reports `READY`, open <http://localhost:5173>.
 
-Running `./knemora` without a subcommand remains the interactive entry point. On first launch it
-displays the Knemora welcome screen and offers either the normal local environment or the isolated
-Development demo; the explicit commands above provide the same standard setup and start path.
-Additional lifecycle commands include:
+For prerequisites, first-run credentials, lifecycle commands, recovery, and safe uninstall, see
+the [Installation guide](docs/open-source/installation.md).
+
+### Try the Quick Demo
+
+Explore Knemora with fictional, synthetic example knowledge before uploading personal documents:
 
 ```bash
 ./knemora start --with-presets
-./knemora delete --presets
-./knemora status
-./knemora logs
-./knemora doctor
-./knemora update --check
-./knemora update
-./knemora stop
-./knemora backup
-./knemora backups
-./knemora uninstall --preserve-data
 ```
 
-Automation can use `--non-interactive --yes --no-open`. Setup is idempotent, configuration values
-already present in `.env` are preserved, and stop/restart never delete data. The UI is available at
-`http://localhost:5173` after either start command reaches `READY`.
-
-## System and AI (SI) Core Architecture
-
-Knemora runs a Vue 3 interface against an authenticated FastAPI boundary on the local machine.
-Google ADK provides bounded root-agent orchestration through typed application tools, while a
-provider-neutral boundary serves the default Qwen3-8B model through local llama.cpp inference.
-Document and dataset ingestion compile durable knowledge into a portable Markdown Wiki with YAML
-frontmatter, explicit links, immutable-source references, and claim-level provenance. Sigma.js and
-Graphology render the native Second Brain from rebuildable indexes, while SQLite and application
-files keep operational data, sources, datasets, and knowledge local.
-
-![Knemora system architecture](docs/assets/knemora-system-architecture-github.png)
-
-![Knemora AI (SI) core architecture](docs/assets/knemora-core-ai-architecture-github.png)
+The isolated Northstar Labs demo contains 120 connected, provenance-bearing Wiki pages. It uses a
+dedicated database and data roots, leaves normal data untouched, and is intentionally read-only for
+uploads, compilation changes, and dataset analysis. See [Quick Demo — Synthetic Data](docs/demo/development-preset.md).
 
 ## Portable backups
 
-Full backups default to `~/Documents/Knemora/Backups/` and include a consistent SQLite snapshot,
-the Knowledge Wiki, immutable originals and attachments, dataset artifacts, checksummed inventory,
-and portable model configuration. GGUF files and secrets are excluded.
+Full backups default to `~/Documents/Knemora/Backups/` and contain a consistent SQLite snapshot,
+the Markdown Wiki, immutable sources and attachments, dataset artifacts, a checksummed inventory,
+and portable model configuration. GGUF model files and secrets are excluded.
 
 ```bash
-./knemora backup                 # --full is the default
+./knemora backup
 ./knemora backup --db-only
-./knemora backup --path ~/Dropbox/Knemora
 ./knemora backups
 ./knemora restore BACKUP_ID_OR_ARCHIVE_PATH
-./knemora backup delete BACKUP_ID
-./knemora config backup-path
 ```
 
-Custom backup paths persist. Restore validates the complete archive before replacement and creates
-an external recovery archive first. Database-only restore preserves file data and requires an
-explicit `--allow-db-only` acknowledgement when Wiki/source files exist. See the
-[backup and restore guide](docs/open-source/backup-and-restore.md).
-
-## Model management
-
-Knemora keeps model import separate from model selection. `models` inspects the effective local
-registry, `load` imports and validates one external GGUF, and `setup --model` selects only a model
-that is already registered.
-
-Use a Knemora-curated, checksum-pinned model directly:
-
-```bash
-./knemora models
-./knemora setup --model qwen3-8b-q3-k-m
-```
-
-Or import a user-provided Hugging Face GGUF, note the generated Knemora ID, then select it:
-
-```bash
-# Syntax example; verify the repository, artifact, and license before use.
-./knemora load --model hf:owner/Example-GGUF:Q3_K_M
-./knemora models
-./knemora setup --model example-q3-k-m
-```
-
-Imports resolve exactly one `.gguf` or fail on no match/ambiguity, download through a resumable
-partial file, validate size/checksum/GGUF headers, and persist metadata under
-`~/.knemora/config/models.json`. Imported models are shown as `User / Custom`, are never described
-as Knemora-tested, and are not selected automatically. They remain subject to their upstream model
-licenses; Knemora's MIT License does not relicense model weights. For automation, place the global
-flags before the command: `./knemora --non-interactive --yes load --model hf:...`.
-
-For automatic profiles, setup and each start assess the full model context against the current safe
-memory budget, then use the supported 4,096-token fallback only if it is safe. The CLI reports that
-reduced context may truncate broad or multi-step answers sooner. Explicit CLI, persisted, or
-environment context requests remain authoritative and are never silently lowered.
-
-Inspect the default model's configured preference, automatic/explicit mode, last effective context,
-and current memory assessment with:
-
-```bash
-./knemora model info qwen3-8b-q3-k-m
-```
-
-The **last effective context** is the context used by the last admitted start; automatic selection
-can change at the next start as available memory changes. Removal is deliberately two-stage:
-
-```bash
-./knemora model remove <id>
-./knemora model remove <id> registry
-```
-
-The first command removes only local artifact data. The second removes the registry entry and is
-accepted only after artifact data is gone. Curated removal is recorded as a persistent local
-suppression—the source-controlled definition is not edited—and the required default definition
-cannot be removed. Active models must first be replaced with `setup --model <other-id>`.
-
-## Try Knemora with demo knowledge
-
-```bash
-./knemora start --with-presets
-```
-
-This creates an isolated, entirely synthetic Northstar Labs `Development` environment with 120
-interconnected, provenance-bearing Wiki pages. A stage progress bar reports database, preset, and
-service readiness. Existing valid assets under `~/.knemora/demo/development` are validated in one
-pass and loaded instead of being compiled again; missing assets are created once. The demo UI is
-read-only: source upload, ingestion mutations, Wiki compilation, and dataset analysis are disabled.
-Ask the copyable prompt shown in the demo UI:
-
-> Which gateway, owner, policy, and freeze day apply to ORBIT-LANTERN? Cite sources.
-
-A general-purpose chatbot without this fictional corpus has no authoritative way to know the
-answer. Knemora can retrieve the seeded private context and cite its sources; this demonstrates
-grounding, not a claim that Knemora's base model is intrinsically smarter. Open the **Second Brain**
-page to inspect the same demo Markdown links used by search and chat.
-
-## Native Second Brain
-
-Open **Second Brain** in the main navigation after startup. The Global Graph contains every
-eligible Markdown page and resolved explicit page link. Local Graph accepts a searchable root page
-and traverses incoming and outgoing links for one, two, or three hops while preserving edge
-direction. Search can focus a node or open its native Wiki Detail page; filters use real page type,
-tag, and folder metadata.
-
-**Expand** opens an immersive viewport layout with Global/Local Graph tabs, Find a page, Filters,
-and Legend on the left and the complete graph toolbar above the canvas. The page itself stays fixed
-while the left panel gains its own scrollbar only when needed. **Minimize** or `Escape` returns to
-the normal workspace.
-
-The graph is a derived view, not another authoritative store. Compilation refreshes the existing
-Wiki revision, and the graph index also detects supported external Markdown edits by safe relative
-path, size, and modification time. **Refresh** forces a rebuild and reports its freshness. Links in
-fenced or inline code, images, attachments, and external URLs are ignored. Ambiguous and unresolved
-page links are counted without creating fake nodes. If WebGL is unavailable, Knemora presents an
-accessible searchable page list with the same native detail navigation.
+Full backup briefly pauses managed writers and publishes only a validated archive. Restore validates
+and stages the complete archive, creates an external recovery backup, and then replaces active data
+with rollback protection. Protect backup media independently because it contains private source and
+database content. See [Backup & Restore](docs/open-source/backup-and-restore.md) for destinations,
+cross-computer restore, database-only limitations, and deletion.
 
 ## Uninstall
 
-Uninstall always requires an explicit `y` or `yes` response in an interactive terminal. Before
-prompting, Knemora prints the absolute repository and configured application-data paths and the
-full deletion scope. `--yes` cannot bypass this confirmation.
+Uninstall is deliberately guarded and always requires an explicit `y` or `yes` in an interactive
+terminal. The global `--yes` flag cannot bypass that confirmation.
 
 ```bash
-./knemora uninstall                  # remove the repository and application data
-./knemora uninstall --preserve-data  # remove only the repository
+./knemora uninstall
+./knemora uninstall --preserve-data
 ```
 
-Both commands remove uncommitted and untracked files inside the checkout. The default command also
-removes the entire configured Knemora runtime directory (normally `~/.knemora`), including the
-database, configuration, models, Wiki, sources, datasets, logs, and demo data. Portable backups
-outside the repository and application-data directory are preserved, as are shared dependencies
-and external symlink targets. With `--preserve-data`, a fresh clone can reuse the retained data by
-keeping the same `KNEMORA_HOME`, then running `./knemora setup` and `./knemora start`.
+Both commands remove the checkout, including uncommitted and untracked files. The default command
+also removes the configured Knemora data directory—normally `~/.knemora`—including its database,
+configuration, models, Wiki, immutable sources, datasets, logs, and demo data.
+`--preserve-data` keeps that application data for a future clone. Independent backups outside the
+checkout and application-data directory are preserved. Create and validate a backup first, then
+review the full safety and recovery procedure in the [Installation guide](docs/open-source/installation.md#safe-uninstall).
 
-## Repository map
+## Core capabilities
 
-```text
-apps/api/             FastAPI, Google ADK, domain services, migrations
-apps/web/             Vue 3, Vite, and TypeScript product interface
-knowledge/            Live portable Markdown Wiki and rebuildable graph index
-infrastructure/       Local runtime, backup, restore, and audit scripts
-packages/             Reserved for justified shared packages
-docs/                 Public guides, architecture references, and examples
-tests/                 Cross-application test contracts
-```
+### Knowledge and Second Brain
 
-## Manual development setup
+- Validated ingestion for documents and structured data, with immutable originals and provenance.
+- A portable Markdown Wiki using YAML frontmatter, wikilinks, and relative Markdown links.
+- A native global and local knowledge graph derived from explicit, evidence-backed connections.
+- Lexical/BM25 search and bounded graph navigation without a mandatory vector stack.
 
-Prerequisites: Python 3.12+, `uv`, Node.js 24, and npm. The repository
-root includes `.nvmrc` and `.node-version` defaults for the supported Node major.
+Learn more in [Ingestion & Provenance](docs/open-source/ingestion.md), the
+[Knowledge Engine](docs/open-source/knowledge-engine.md), [Knowledge Updates & Recompilation](docs/open-source/knowledge-updates-and-recompilation.md),
+and [Second Brain & Wiki](docs/open-source/wiki.md).
 
-```bash
-cp .env.example .env
-# Replace KNEMORA_BOOTSTRAP_ADMIN_PASSWORD in .env.
-make setup
-make db-migrate
-make api-dev
-```
+### Local AI
 
-In another terminal:
+- AI (SI) Chat with Wiki and Direct response modes plus model-supported Fast and Deep controls.
+- Grounded Wiki answers can use authorized knowledge, source, relationship, graph, and dataset tools.
+- Direct mode can optionally search the public web through a bounded, explicit network boundary.
+- Curated and custom GGUF models run locally through a provider-neutral llama.cpp integration.
 
-```bash
-make web-dev
-```
+See [AI (SI) Chat modes](docs/open-source/chat.md), [Models](docs/open-source/models.md), and
+[Local Inference](docs/open-source/local-inference.md).
 
-Open `http://localhost:5173`. The API health endpoint is
-`http://localhost:8000/api/v1/health`.
+### Data and analytics
 
-The full local release can also be started with `make app-start` after configuring llama.cpp and a
-compatible GGUF. For an explicit no-inference operations drill, use:
+CSV and XLSX data remain structured. Models may select or explain an analysis, while allow-listed
+Polars operations perform filtering, aggregation, statistics, and chart-data generation
+deterministically rather than relying on model arithmetic.
 
-```bash
-KNEMORA_SKIP_LLM=1 make app-start
-```
+### Privacy and ownership
 
-## Documentation
+- SQLite stores local operational metadata; files hold immutable sources, datasets, and the Wiki.
+- Backend authentication, RBAC, owner scoping, and narrow tools protect derived knowledge.
+- Knemora sends no telemetry. Optional public search is Direct-only and clearly separated.
+- Versioned portable backups support validated, staged restoration of user-owned data.
 
+Review [Security & Privacy](docs/open-source/security.md) and
+[Backup & Restore](docs/open-source/backup-and-restore.md) before using sensitive material.
+
+## Advanced usage and guides
+
+- **Models:** list, download/import, select, inspect, and remove curated or custom GGUF models in
+  the [Models guide](docs/open-source/models.md).
+- **AI (SI) Chat modes:** understand Wiki/Direct, Fast/Deep, and optional Direct Web behavior in
+  [AI (SI) Chat modes](docs/open-source/chat.md).
+- **Operations:** use `./knemora status`, `logs`, `doctor`, `stop`, `backup`, and `update`; follow
+  [Installation](docs/open-source/installation.md), [Backup & Restore](docs/open-source/backup-and-restore.md),
+  and [Upgrading](docs/open-source/upgrading.md) for complete procedures and warnings.
+- **Development:** run the application manually, validate changes, and use the optional ADK
+  developer playground with the [Development guide](docs/open-source/development.md).
+
+## Documentation index
+
+- [Quick Demo — Synthetic Data](docs/demo/development-preset.md)
 - [Installation](docs/open-source/installation.md)
-- [Architecture](docs/open-source/architecture.md)
-- [Updates](docs/open-source/upgrading.md#managed-updates-from-the-stable-channel)
-- [Workspace lists and conversation history](docs/open-source/workspace-lists-and-conversation-history.md)
-- [Wiki / Direct Chat Modes](docs/open-source/chat.md#wiki--direct-chat-modes)
-- [Explicit public web search](docs/open-source/chat.md#explicit-public-web-search)
-- [Google ADK developer playground](docs/open-source/installation.md#google-adk-developer-playground)
-- [Local inference](docs/open-source/local-inference.md)
-- [Ingestion and provenance](docs/open-source/ingestion.md)
+- [Models](docs/open-source/models.md)
+- [AI (SI) Chat modes](docs/open-source/chat.md)
+- [Ingestion & Provenance](docs/open-source/ingestion.md)
 - [Knowledge Engine](docs/open-source/knowledge-engine.md)
-- [Second Brain and Wiki](docs/open-source/wiki.md)
-- [Security and privacy](docs/open-source/security.md)
-- [Backup and restore](docs/open-source/backup-and-restore.md)
+- [Knowledge Updates & Recompilation](docs/open-source/knowledge-updates-and-recompilation.md)
+- [Second Brain & Wiki](docs/open-source/wiki.md)
+- [Local Inference](docs/open-source/local-inference.md)
+- [Architecture](docs/open-source/architecture.md)
+- [Security & Privacy](docs/open-source/security.md)
+- [Backup & Restore](docs/open-source/backup-and-restore.md)
 - [Upgrading](docs/open-source/upgrading.md)
 - [Development](docs/open-source/development.md)
-- [Development demo preset](docs/demo/development-preset.md)
+- [Optional external viewers](docs/open-source/external-viewers.md)
+- [Changelog](docs/open-source/CHANGELOG.md)
+- [Third-party notices](docs/open-source/THIRD_PARTY_NOTICES.md)
 
-## Contributing and security
+## Community and open source
 
-See [Contributing](.github/CONTRIBUTING.md), the [Code of Conduct](.github/CODE_OF_CONDUCT.md), and
-the [security policy](.github/SECURITY.md). Third-party licensing is summarized in
-[Third-party notices](docs/open-source/THIRD_PARTY_NOTICES.md), and release history is recorded in
-the [changelog](docs/open-source/CHANGELOG.md).
+Knemora is open-source software under the [MIT License](LICENSE). Contributions and responsible
+feedback are welcome:
 
-## License
-
-Knemora is open-source software licensed under the MIT License.
-
-See [LICENSE](./LICENSE) for details.
+- [Contributing](.github/CONTRIBUTING.md)
+- [Issues](https://github.com/federicolaterra/knemora/issues)
+- [Code of Conduct](.github/CODE_OF_CONDUCT.md)
+- [Security Policy](.github/SECURITY.md)
+- [Support](.github/SUPPORT.md)
+- [Changelog](docs/open-source/CHANGELOG.md)
